@@ -326,14 +326,21 @@ let decode_dsml_to_arguments name (args : (string * (string * string)) list) =
 (* ===================================================================== *)
 
 module Codec = struct
-  (* A parameter value codec: raw text + the [string="..."] flag <-> ['a]. *)
+  (* A parameter value codec: raw text + the [string="..."] flag <-> ['a].
+     [v_schema] is the JSON Schema fields ([("type", ...)], etc.) describing the
+     value, used to advertise the parameter to the model. *)
   type 'a value = {
     v_dec : raw:string -> is_string:bool -> 'a;
     v_enc : 'a -> bool * string (* (is_string, raw text) *);
+    v_schema : (string * Json.t) list;
   }
 
   let string =
-    { v_dec = (fun ~raw ~is_string:_ -> raw); v_enc = (fun s -> (true, s)) }
+    {
+      v_dec = (fun ~raw ~is_string:_ -> raw);
+      v_enc = (fun s -> (true, s));
+      v_schema = [ ("type", Json.Value.string "string") ];
+    }
 
   let json =
     {
@@ -351,6 +358,7 @@ module Codec = struct
           match j with
           | Json.String (s, _) -> (true, s)
           | other -> (false, Json.Value.to_string other));
+      v_schema = [];
     }
 
   let bool =
@@ -364,6 +372,7 @@ module Codec = struct
               raise
                 (Parse_error (Printf.sprintf "Invalid bool value: '%s'" raw)));
       v_enc = (fun b -> (false, if b then "true" else "false"));
+      v_schema = [ ("type", Json.Value.string "boolean") ];
     }
 
   let int =
@@ -375,6 +384,7 @@ module Codec = struct
           | None ->
               raise (Parse_error (Printf.sprintf "Invalid int value: '%s'" raw)));
       v_enc = (fun i -> (false, string_of_int i));
+      v_schema = [ ("type", Json.Value.string "integer") ];
     }
 
   let float =
@@ -387,12 +397,14 @@ module Codec = struct
               raise
                 (Parse_error (Printf.sprintf "Invalid float value: '%s'" raw)));
       v_enc = (fun f -> (false, Json.Value.to_string (Json.Value.number f)));
+      v_schema = [ ("type", Json.Value.string "number") ];
     }
 
   let map_value ~dec ~enc v =
     {
       v_dec = (fun ~raw ~is_string -> dec (v.v_dec ~raw ~is_string));
       v_enc = (fun b -> v.v_enc (enc b));
+      v_schema = v.v_schema;
     }
 
   (* A codec for one invocation.  Scanning (name + parameters) is done by the
@@ -400,9 +412,17 @@ module Codec = struct
      be dispatched on the tool name (see {!choice}). *)
   type 'a t = {
     name : string; (* fixed tool name, or "" *)
+    schema : Json.t; (* JSON Schema for the parameters object *)
     decode_invoke : string -> (string * (string * string)) list -> 'a;
     encode_invoke : 'a -> string;
   }
+
+  (* The "object" JSON Schema accepting any parameters. *)
+  let any_schema =
+    Json.Value.object'
+      [
+        Json.Value.member (Json.Value.name "type") (Json.Value.string "object");
+      ]
 
   let render_param name (is_string, raw) =
     Printf.sprintf "<%sparameter name=\"%s\" string=\"%s\">%s</%sparameter>"
@@ -418,12 +438,15 @@ module Codec = struct
     type ('o, 'dec) map = {
       iname : string;
       idec : (string * (string * string)) list -> 'dec;
-      ienc : ('o -> string) list (* reversed *);
+      ienc : ('o -> string) list; (* reversed *)
+      iprops : (string * Json.t) list; (* (param name, schema), reversed *)
+      ireq : string list; (* required param names, reversed *)
     }
 
-    let map iname dec = { iname; idec = (fun _ -> dec); ienc = [] }
+    let map iname dec =
+      { iname; idec = (fun _ -> dec); ienc = []; iprops = []; ireq = [] }
 
-    let param ~enc name value m =
+    let param ~enc ?description name value m =
       let idec params =
         let f = m.idec params in
         let raw, is_string =
@@ -436,11 +459,43 @@ module Codec = struct
         f (value.v_dec ~raw ~is_string)
       in
       let enc1 o = render_param name (value.v_enc (enc o)) in
-      { iname = m.iname; idec; ienc = enc1 :: m.ienc }
+      let prop =
+        let fields =
+          value.v_schema
+          @
+          match description with
+          | Some d -> [ ("description", Json.Value.string d) ]
+          | None -> []
+        in
+        Json.Value.object'
+          (List.map
+             (fun (k, v) -> Json.Value.member (Json.Value.name k) v)
+             fields)
+      in
+      {
+        iname = m.iname;
+        idec;
+        ienc = enc1 :: m.ienc;
+        iprops = (name, prop) :: m.iprops;
+        ireq = name :: m.ireq;
+      }
 
     let seal m =
+      let member k v = Json.Value.member (Json.Value.name k) v in
+      let schema =
+        Json.Value.object'
+          [
+            member "type" (Json.Value.string "object");
+            member "properties"
+              (Json.Value.object'
+                 (List.rev_map (fun (k, v) -> member k v) m.iprops));
+            member "required"
+              (Json.Value.list (List.rev_map Json.Value.string m.ireq));
+          ]
+      in
       {
         name = m.iname;
+        schema;
         decode_invoke = (fun _name params -> m.idec params);
         encode_invoke =
           (fun o ->
@@ -453,6 +508,7 @@ module Codec = struct
   let dynamic =
     {
       name = "";
+      schema = any_schema;
       decode_invoke = (fun name params -> decode_dsml_to_arguments name params);
       encode_invoke =
         (fun tc -> render_invoke tc.name (encode_arguments_to_dsml tc));
@@ -461,9 +517,32 @@ module Codec = struct
   let map ~dec ~enc c =
     {
       name = c.name;
+      schema = c.schema;
       decode_invoke = (fun n p -> dec (c.decode_invoke n p));
       encode_invoke = (fun b -> c.encode_invoke (enc b));
     }
+
+  let name c = c.name
+  let schema c = c.schema
+
+  (* Decode the JSON object [arguments] string (as carried by {!tool_call})
+     through [codec], mirroring the [string="true|false"] convention: string
+     members are raw text, every other member is its compact JSON. *)
+  let decode_arguments codec arguments =
+    let params_of members =
+      List.map
+        (fun (nm, v) ->
+          match v with
+          | Json.String (s, _) -> (fst nm, (s, "true"))
+          | other -> (fst nm, (Json.Value.to_string other, "false")))
+        members
+    in
+    match Json.Value.of_string arguments with
+    | Ok (Json.Object (members, _)) -> (
+        try Ok (codec.decode_invoke codec.name (params_of members))
+        with Parse_error m -> Error m)
+    | Ok _ -> Error "tool arguments are not a JSON object"
+    | Error _ -> Error "tool arguments are not valid JSON"
 
   type 'b case = {
     cname : string;
@@ -481,6 +560,7 @@ module Codec = struct
   let choice ?default cases =
     {
       name = "";
+      schema = (match default with Some d -> d.schema | None -> any_schema);
       decode_invoke =
         (fun n p ->
           match List.find_opt (fun c -> c.cname = n) cases with

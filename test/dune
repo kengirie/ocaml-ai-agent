@@ -1,0 +1,15 @@
+; test_toolbox is a pure Eio-mock unit test. live_agent_mock drives the real
+; engine with mocked tool I/O; it is registered so `dune runtest` includes it,
+; but skips the multi-GB model load unless DS4_LIVE is set.
+
+(tests
+ (names test_toolbox live_agent_mock)
+ (libraries
+  deepseek
+  deepseek.cmd
+  deepseek.dsml
+  eio
+  eio.mock
+  eio_main
+  nox-xdg)
+ (modules test_toolbox live_agent_mock))

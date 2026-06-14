@@ -193,9 +193,16 @@ module Codec : sig
     (** [map name dec] starts an invoke for tool [name] assembled by [dec]. *)
 
     val param :
-      enc:('o -> 'a) -> string -> 'a value -> ('o, 'a -> 'b) map -> ('o, 'b) map
-    (** [param ~enc name v m] adds parameter [name] of type [v]; [enc] projects
-        it from the value for encoding. *)
+      enc:('o -> 'a) ->
+      ?description:string ->
+      string ->
+      'a value ->
+      ('o, 'a -> 'b) map ->
+      ('o, 'b) map
+    (** [param ~enc ?description name v m] adds required parameter [name] of
+        type [v] to the invoke under construction [m]. [enc] projects the value
+        from ['o] when encoding, and [description] documents the parameter in
+        the derived {!schema}. *)
 
     val seal : ('o, 'o) map -> 'o t
     (** [seal m] finalises the invoke codec. *)
@@ -207,6 +214,20 @@ module Codec : sig
 
   val map : dec:('a -> 'b) -> enc:('b -> 'a) -> 'a t -> 'b t
   (** [map ~dec ~enc c] adapts an invoke codec to another type. *)
+
+  val name : 'a t -> string
+  (** [name c] is the tool name [c] decodes and encodes ([""] for {!dynamic} and
+      {!choice}). *)
+
+  val schema : 'a t -> Json.t
+  (** [schema c] is the JSON Schema for [c]'s parameters object, with one
+      property per {!Invoke.param} and a [required] list. Pass it to {!Tool.v}
+      to advertise the tool to the model. *)
+
+  val decode_arguments : 'a t -> string -> ('a, string) result
+  (** [decode_arguments c arguments] decodes one tool call's JSON-object
+      [arguments] string (as carried by {!tool_call}) through [c], returning the
+      typed value or an error message. *)
 
   type 'b case
   (** A case in a {!choice}: one tool name handled by a typed codec. *)

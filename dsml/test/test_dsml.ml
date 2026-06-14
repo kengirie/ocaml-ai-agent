@@ -279,6 +279,25 @@ let () =
          (Tool.v ~name:"bash" ~description:"run a shell command"
             ~parameters:params ()));
 
+  (* T16: a sealed invoke codec derives its parameters JSON Schema. *)
+  check_eq "codec schema"
+    ~expect:
+      {|{"type":"object","properties":{"path":{"type":"string"},"line":{"type":"integer"}},"required":["path","line"]}|}
+    ~got:(Json.Value.to_string (Codec.schema edit_codec));
+
+  (* T17: decode_arguments turns a JSON arguments object into the typed value. *)
+  check "codec decode_arguments"
+    (match
+       Codec.decode_arguments edit_codec {|{"path":"/tmp/x.c","line":42}|}
+     with
+    | Ok e -> e.path = "/tmp/x.c" && e.line = 42
+    | Error _ -> false);
+
+  check "codec decode_arguments error"
+    (match Codec.decode_arguments edit_codec {|{"path":"/tmp/x.c"}|} with
+    | Error _ -> true
+    | Ok _ -> false);
+
   if !failures = 0 then Printf.printf "\nAll tests passed.\n"
   else begin
     Printf.printf "\n%d test(s) failed.\n" !failures;

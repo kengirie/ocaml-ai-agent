@@ -14,8 +14,8 @@
  (name deepseek)
  (public_name deepseek)
  (modes native)
- (libraries eio unix)
- (modules v4 shaders)
+ (libraries eio unix deepseek.dsml nox-json)
+ (modules deepseek v4 shaders agent tool toolbox)
  (foreign_archives ds4_core)
  (foreign_stubs
   (language c)

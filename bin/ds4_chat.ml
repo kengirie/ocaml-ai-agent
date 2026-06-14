@@ -8,8 +8,9 @@
    no --model picks the first *.gguf found there. *)
 
 module Ds4 = Deepseek.V4
+module Model = Deepseek_cmd.Model
 
-let model_dir xdg = Filename.concat (Xdg.data_dir xdg) "ds4"
+let model_dir = Model.dir
 
 (* Run [f], turning any raised error into a clean CLI message (Cmd.eval_result
    prints it and exits nonzero) instead of an "internal error" backtrace. *)
@@ -18,143 +19,17 @@ let guard f =
   | Failure msg -> Error msg
   | e -> Error (Printexc.to_string e)
 
-(* ---- models ------------------------------------------------------------ *)
-
-let hf_repo = "antirez/deepseek-v4-gguf"
-
-type model = {
-  name : string;  (** canonical download_model.sh target *)
-  aliases : string list;  (** short forms accepted on the CLI *)
-  files : string list;  (** GGUF file(s) in the HF repo *)
-  descr : string;
-}
-
-(* Targets mirror download_model.sh; aliases are short hands for the CLI. *)
-let models =
-  [
-    {
-      name = "q2-imatrix";
-      aliases = [ "q2" ];
-      files =
-        [
-          "DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf";
-        ];
-      descr = "2-bit Flash routed experts (~81 GB); for 96-128 GB RAM.";
-    };
-    {
-      name = "q2-q4-imatrix";
-      aliases = [ "q2q4" ];
-      files =
-        [
-          "DeepSeek-V4-Flash-Layers37-42Q4KExperts-OtherExpertLayersIQ2XXSGateUp-Q2KDown-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-fixed.gguf";
-        ];
-      descr = "Mixed Flash quant (~98 GB); higher quality for 128 GB.";
-    };
-    {
-      name = "q4-imatrix";
-      aliases = [ "q4" ];
-      files =
-        [
-          "DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2-imatrix.gguf";
-        ];
-      descr = "4-bit Flash routed experts (~153 GB); for 256 GB+ RAM.";
-    };
-    {
-      name = "pro-q2-imatrix";
-      aliases = [ "pro-q2" ];
-      files =
-        [
-          "DeepSeek-V4-Pro-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-Instruct-imatrix.gguf";
-        ];
-      descr = "PRO q2 single file (~430 GB); for 512 GB RAM.";
-    };
-    {
-      name = "pro-q4-layers00-30";
-      aliases = [ "pro-q4-a" ];
-      files = [ "DeepSeek-V4-Pro-Q4K-Layers00-30.gguf" ];
-      descr = "PRO Q4 layers 0..30 (~426 GB); distributed coordinator.";
-    };
-    {
-      name = "pro-q4-layers31-output";
-      aliases = [ "pro-q4-b" ];
-      files = [ "DeepSeek-V4-Pro-Q4K-Layers-31-output.gguf" ];
-      descr = "PRO Q4 layers 31..output (~412 GB); distributed worker.";
-    };
-    {
-      name = "pro-q4-split";
-      aliases = [ "pro-q4" ];
-      files =
-        [
-          "DeepSeek-V4-Pro-Q4K-Layers00-30.gguf";
-          "DeepSeek-V4-Pro-Q4K-Layers-31-output.gguf";
-        ];
-      descr = "Both PRO Q4 split files (~838 GB total).";
-    };
-    {
-      name = "mtp";
-      aliases = [];
-      files = [ "DeepSeek-V4-Flash-MTP-Q4K-Q8_0-F32.gguf" ];
-      descr = "Optional speculative-decoding component (~3.5 GB).";
-    };
-  ]
-
-(* A model is "present" when every one of its files exists in [dir]. *)
-let model_present dir m =
-  List.for_all (fun f -> Sys.file_exists (Filename.concat dir f)) m.files
-
-(* Look up a model by canonical name or alias. *)
-let find_model s =
-  List.find_opt (fun m -> m.name = s || List.mem s m.aliases) models
-
 (* ---- chat -------------------------------------------------------------- *)
 
-let find_gguf dir =
-  match Sys.is_directory dir with
-  | exception Sys_error _ -> None
-  | false -> None
-  | true -> (
-      Sys.readdir dir |> Array.to_list
-      |> List.filter (fun f -> Filename.check_suffix f ".gguf")
-      |> List.sort String.compare
-      |> function
-      | [] -> None
-      | f :: _ -> Some (Filename.concat dir f))
-
-(* --model accepts a known name/alias (resolved to its single GGUF in the data
-   dir) or an explicit filesystem path. *)
-let resolve_model ~xdg = function
-  | Some s -> (
-      match find_model s with
-      | Some { files = [ f ]; _ } ->
-          let path = Filename.concat (model_dir xdg) f in
-          if Sys.file_exists path then path
-          else
-            failwith
-              (Printf.sprintf
-                 "model '%s' is not downloaded; run 'ds4 download %s'" s s)
-      | Some { name; files; _ } ->
-          failwith
-            (Printf.sprintf
-               "model '%s' has %d files (%s); not usable for chat, pass an \
-                explicit --model PATH"
-               name (List.length files) (String.concat ", " files))
-      | None -> s (* treat as a filesystem path *))
-  | None -> (
-      match Sys.getenv_opt "DS4_MODEL" with
-      | Some m -> m
-      | None -> (
-          let data = model_dir xdg in
-          match find_gguf data with
-          | Some m -> m
-          | None ->
-              failwith
-                (Printf.sprintf
-                   "no model found: pass --model PATH|ALIAS, set DS4_MODEL, \
-                    run 'ds4 download <target>', or place a .gguf in %s"
-                   data)))
+(* The model catalogue and the --model resolution policy live in
+   {!Deepseek_cmd.Model}; surface its errors through [guard]. *)
+let resolve_model ~xdg model_opt =
+  match Model.resolve ~xdg model_opt with
+  | Ok path -> path
+  | Error e -> failwith e
 
 (* The DS4 RNG is degenerate at state 0, so a 0 request becomes a per-run seed
-   derived from the clock and pid (matching the C CLI default). *)
+   derived from the clock and pid. *)
 let resolve_seed = function
   | 0 ->
       let t = Int64.of_float (Unix.gettimeofday () *. 1_000_000.) in
@@ -172,7 +47,7 @@ let chat model_opt system think max_tokens temperature seed prompt =
   let stdout = Eio.Stdenv.stdout env in
   let cache = Eio.Path.(fs / Xdg.cache_dir xdg) in
   let model = Eio.Path.(fs / model_path) in
-  let engine = Ds4.create ~cache ~model in
+  let engine = Ds4.create ~cache ~model () in
   Eio.Flow.copy_string
     (Printf.sprintf "model: %s  (vocab %d)\n\n" (Ds4.model_name engine)
        (Ds4.vocab_size engine))
@@ -185,7 +60,7 @@ let chat model_opt system think max_tokens temperature seed prompt =
 
 (* ---- download ---------------------------------------------------------- *)
 
-let download m token_opt =
+let download (m : Model.t) token_opt =
   guard @@ fun () ->
   Eio_main.run @@ fun env ->
   let xdg = Xdg.v ~env:Sys.getenv_opt () in
@@ -202,13 +77,13 @@ let download m token_opt =
     (fun file ->
       Printf.eprintf
         "Downloading %s\n  from https://huggingface.co/%s\n  into %s\n%!" file
-        hf_repo dir;
+        Model.hf_repo dir;
       let args =
         [
           "uvx";
           "hf";
           "download";
-          hf_repo;
+          Model.hf_repo;
           file;
           "--repo-type";
           "model";
@@ -231,16 +106,17 @@ let list () =
   Printf.printf "Models (download dir: %s)\n\n" dir;
   Printf.printf "  %-3s %-22s %-9s %s\n" "" "TARGET" "ALIASES" "DESCRIPTION";
   List.iter
-    (fun m ->
+    (fun (m : Model.t) ->
       Printf.printf "  %-3s %-22s %-9s %s\n"
-        (if model_present dir m then "[*]" else "[ ]")
+        (if Model.present ~dir m then "[*]" else "[ ]")
         m.name
         (String.concat "," m.aliases)
         m.descr)
-    models;
+    Model.all;
   (* Any other GGUFs sitting in the dir that aren't known targets. *)
   let known =
-    List.concat_map (fun m -> m.files) models |> List.sort_uniq String.compare
+    List.concat_map (fun (m : Model.t) -> m.files) Model.all
+    |> List.sort_uniq String.compare
   in
   let others =
     match Sys.readdir dir with
@@ -261,14 +137,7 @@ let list () =
 
 open Cmdliner
 
-let model =
-  Arg.(
-    value
-    & opt (some string) None
-    & info [ "m"; "model" ] ~docv:"MODEL"
-        ~doc:
-          "GGUF model: a download target name or alias (e.g. 'q4'), or a path \
-           to a .gguf file.")
+let model = Model.arg
 
 let system =
   Arg.(
@@ -311,18 +180,7 @@ let chat_cmd =
   in
   Cmd.v (Cmd.info "chat" ~doc:"Single prompt/response.") term
 
-(* Reusable term: a model target accepted by canonical name or any alias. *)
-let target =
-  let enum_assoc =
-    List.concat_map
-      (fun m -> (m.name, m) :: List.map (fun a -> (a, m)) m.aliases)
-      models
-  in
-  let doc =
-    "Model to download, by name or alias (run 'ds4 list' for the full table)."
-  in
-  Arg.(
-    required & pos 0 (some (enum enum_assoc)) None & info [] ~docv:"TARGET" ~doc)
+let target = Model.target_arg
 
 let token =
   Arg.(
@@ -342,14 +200,14 @@ let download_cmd =
           ~/.local/share/ds4), where 'ds4 chat' looks for models. Requires \
           'uv' (for 'uvx') on PATH." :: `S "TARGETS"
     :: List.map
-         (fun m ->
+         (fun (m : Model.t) ->
            let label =
              match m.aliases with
              | [] -> m.name
              | a -> Printf.sprintf "%s (%s)" m.name (String.concat ", " a)
            in
            `I (label, m.descr))
-         models
+         Model.all
   in
   let term = Term.(const download $ target $ token) in
   Cmd.v (Cmd.info "download" ~doc ~man) term

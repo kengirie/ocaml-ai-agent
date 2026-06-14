@@ -136,6 +136,25 @@ CAMLprim value caml_ds4_encode_chat_prompt(value v_engine, value v_system,
     CAMLreturn(v_arr);
 }
 
+/* Tokenise an already-rendered prompt verbatim, WITHOUT re-applying the chat
+ * template (unlike caml_ds4_encode_chat_prompt). The agent renders the whole
+ * conversation with the Dsml library, so the template must not be applied a
+ * second time here. */
+CAMLprim value caml_ds4_tokenize_rendered_chat(value v_engine, value v_text) {
+    CAMLparam2(v_engine, v_text);
+    CAMLlocal1(v_arr);
+
+    ds4_tokens out;
+    memset(&out, 0, sizeof(out));
+    ds4_tokenize_rendered_chat(Engine_val(v_engine), String_val(v_text), &out);
+
+    v_arr = caml_alloc(out.len, 0);
+    for (int i = 0; i < out.len; i++)
+        Field(v_arr, i) = Val_int(out.v[i]);
+    ds4_tokens_free(&out);
+    CAMLreturn(v_arr);
+}
+
 CAMLprim value caml_ds4_session_create(value v_engine, value v_ctx,
                                        value v_seed) {
     CAMLparam3(v_engine, v_ctx, v_seed);
