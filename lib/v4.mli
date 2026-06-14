@@ -24,8 +24,8 @@ val create :
 (** [create ~cache ~model ()] materialises the backend's embedded GPU kernels
     under [cache] (the Metal backend writes its [.metal] kernels there; the CPU
     backend has none, so this is a no-op) and opens the GGUF model at [model].
-    [cache] is a base cache directory. Raises [Failure] if the model cannot be
-    opened.
+    [cache] is the application cache directory; kernels are written under
+    [cache]/metal. Raises [Failure] if the model cannot be opened.
 
     [domain_mgr] runs the engine on a dedicated worker domain (one
     {!Eio.Domain_manager.run} hosting a job loop): every inference call is run

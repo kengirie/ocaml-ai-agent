@@ -1,6 +1,8 @@
 (* A typed tool: a Dsml invoke codec (schema + decoder) plus a handler over the
    decoded OCaml value. The codec hides the JSON layer from the handler. *)
 
+module Json = Dsml.Json
+
 type t = {
   name : string;
   description : string;

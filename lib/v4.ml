@@ -105,7 +105,7 @@ let create ?domain_mgr ?sw ~cache ~model () =
      capability, so they stay here; only [c_engine_open] is handed to the
      worker. [materialize_shaders] is a no-op for backends with no embedded
      kernels (CPU, CUDA). *)
-  let shader_dir = Eio.Path.(cache / "ds4" / "metal") in
+  let shader_dir = Eio.Path.(cache / "metal") in
   materialize_shaders ~shader_dir;
   let path = Eio.Path.native_exn model in
   let worker =

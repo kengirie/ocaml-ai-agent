@@ -71,7 +71,11 @@ module Model = struct
     ]
 
   let find s = List.find_opt (fun m -> m.name = s || List.mem s m.aliases) all
-  let dir xdg = Filename.concat (Xdg.data_dir xdg) "ds4"
+
+  (* xdge scopes paths to the app name ("ds4"), so its data dir is already
+     XDG_DATA_HOME/ds4; render it to a plain path for the string-based helpers
+     below. *)
+  let dir xdg = Eio.Path.native_exn (Xdge.data_dir xdg)
 
   let present ~dir m =
     List.for_all (fun f -> Sys.file_exists (Filename.concat dir f)) m.files
@@ -88,9 +92,7 @@ module Model = struct
         | [] -> None
         | f :: _ -> Some (Filename.concat d f))
 
-  let resolve ?(env = Sys.getenv_opt) ?xdg override =
-    let xdg = match xdg with Some x -> x | None -> Xdg.v ~env () in
-    let data = dir xdg in
+  let resolve ?(env = Sys.getenv_opt) ~dir:data override =
     match override with
     | Some s -> (
         match find s with
@@ -133,10 +135,6 @@ module Model = struct
              path to a .gguf file. When omitted, the DS4_MODEL environment \
              variable is used, then the first *.gguf in the data directory \
              (XDG_DATA_HOME/ds4).")
-
-  let term ?env ?xdg () =
-    let resolve override = resolve ?env ?xdg override in
-    Term.(const resolve $ arg)
 
   let target_arg =
     let enum_assoc =

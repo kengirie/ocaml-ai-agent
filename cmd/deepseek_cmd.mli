@@ -27,7 +27,7 @@ module Model : sig
   val find : string -> t option
   (** [find s] is the target whose name or one of whose aliases is [s]. *)
 
-  val dir : Xdg.t -> string
+  val dir : Xdge.t -> string
   (** [dir xdg] is the directory models are kept in ([XDG_DATA_HOME/ds4]). *)
 
   val present : dir:string -> t -> bool
@@ -35,33 +35,25 @@ module Model : sig
 
   val resolve :
     ?env:(string -> string option) ->
-    ?xdg:Xdg.t ->
+    dir:string ->
     string option ->
     (string, string) result
-  (** [resolve override] is the path of the model to load, or an error message
-      explaining how to supply one.
+  (** [resolve ~dir override] is the path of the model to load, or an error
+      message explaining how to supply one.
 
       [override] (typically from [--model]) may be a target name or alias, which
-      is resolved to its single GGUF under {!dir} — erroring if it is not
+      is resolved to its single GGUF under [dir] — erroring if it is not
       downloaded, or if the target is split across several files — or any other
       string, which is taken as a filesystem path. When [override] is absent,
-      [DS4_MODEL] is tried, then the first [*.gguf] under {!dir} in lexical
+      [DS4_MODEL] is tried, then the first [*.gguf] under [dir] in lexical
       order.
 
-      [env] reads environment variables (default {!Sys.getenv_opt}); [xdg]
-      overrides the resolved data directory. *)
+      [env] reads environment variables (default {!Sys.getenv_opt}); [dir] is
+      the model data directory, typically {!dir} applied to an xdge context. *)
 
   val arg : string option Cmdliner.Term.t
   (** [arg] is the [-m]/[--model] argument: a target name, alias, or path, or
       [None] to fall back to the environment and data directory. *)
-
-  val term :
-    ?env:(string -> string option) ->
-    ?xdg:Xdg.t ->
-    unit ->
-    (string, string) result Cmdliner.Term.t
-  (** [term ()] combines {!arg} with {!resolve} into one term yielding the
-      resolved model path (or an error). *)
 
   val target_arg : t Cmdliner.Term.t
   (** [target_arg] is a required positional [TARGET] argument naming a {!t} by

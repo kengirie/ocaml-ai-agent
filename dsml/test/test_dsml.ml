@@ -184,7 +184,7 @@ let () =
         ~got:tc.arguments
   | _ -> check "mixed param single call" false);
 
-  (* T9: JSON via nox-json — compact output, member order preserved. *)
+  (* T9: JSON via jsont — compact output, member order preserved. *)
   check_eq "json compact" ~expect:{|{"a":1,"b":"x"}|}
     ~got:
       (Json.Value.to_string (Json.Value.of_string_exn {|{ "a": 1, "b": "x" }|}));

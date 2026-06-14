@@ -13,6 +13,8 @@ depends: [
   "dune" {>= "3.21"}
   "ocaml" {>= "5.2.0"}
   "dune-configurator" {build}
+  "jsont" {>= "0.2.0"}
+  "xdge" {>= "1.0.0"}
   "odoc" {with-doc}
 ]
 build: [

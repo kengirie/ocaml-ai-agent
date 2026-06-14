@@ -18,4 +18,6 @@
   "Library to run Deepseek v4 locally, with a selectable inference backend (Apple Metal or CPU).")
  (depends
   (ocaml (>= 5.2.0))
-  (dune-configurator :build)))
+  (dune-configurator :build)
+  (jsont (>= 0.2.0))
+  (xdge (>= 1.0.0))))

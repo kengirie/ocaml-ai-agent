@@ -4,14 +4,7 @@
 
 (tests
  (names test_toolbox live_agent_mock)
- (libraries
-  deepseek
-  deepseek.cmd
-  deepseek.dsml
-  eio
-  eio.mock
-  eio_main
-  nox-xdg)
+ (libraries deepseek deepseek.cmd deepseek.dsml eio eio.mock eio_main xdge)
  (modules test_toolbox live_agent_mock))
 
 ; Separate stanza: this one selects the CPU implementation explicitly, whereas

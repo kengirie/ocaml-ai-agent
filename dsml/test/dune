@@ -1,4 +1,4 @@
 (test
  (name test_dsml)
- (libraries deepseek.dsml nox-json bytesrw)
+ (libraries deepseek.dsml bytesrw)
  (modules test_dsml))

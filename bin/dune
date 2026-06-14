@@ -5,14 +5,14 @@
 
 (executables
  (names ds4_chat ds4_agent)
+ (public_names ds4-chat ds4-agent)
  (libraries
   deepseek
   deepseek.metal
   deepseek.cmd
   deepseek.dsml
-  nox-json
   eio
   eio_main
   cmdliner
-  nox-xdg
+  xdge
   unix))

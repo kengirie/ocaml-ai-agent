@@ -39,8 +39,8 @@
     [string="true"] is a raw-text value; [string="false"] is JSON. It looks like
     XML but is not — parameter bodies are raw text. Tool results are supplied as
     {!tool} messages and fold into the preceding turn. Tool schemas and
-    tool-call arguments are nox-json [Json.t] values; the tool-call grammar
-    itself is the bidirectional combinator codec {!Codec}. *)
+    tool-call arguments are {!Json.t} values (jsont's representation); the
+    tool-call grammar itself is the bidirectional combinator codec {!Codec}. *)
 
 (** {1 Tokens} *)
 
@@ -54,6 +54,28 @@ val dsml_token : string
 val user_token : string
 val assistant_token : string
 val latest_reminder_token : string
+
+(** {1 JSON}
+
+    Generic JSON values on jsont's representation ([Json.t = Jsont.json], so
+    jsont's own combinators apply directly). Tool schemas and tool-call
+    arguments are {!Json.t} values. *)
+module Json : sig
+  type t = Jsont.json
+  (** A generic JSON value. *)
+
+  module Value : sig
+    val to_string : t -> string
+    (** [to_string j] is the compact (minified) JSON text of [j]. *)
+
+    val of_string : string -> (t, string) result
+    (** [of_string s] parses [s], or returns an error message. *)
+
+    val of_string_exn : string -> t
+    (** [of_string_exn s] parses [s]; raises [Invalid_argument] on a parse
+        error. *)
+  end
+end
 
 (** {1 Types} *)
 

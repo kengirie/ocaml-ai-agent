@@ -7,8 +7,9 @@
 
    DSML is XML-flavored but not XML: tags embed the [｜DSML｜] token (U+FF5C
    bars) and [<｜DSML｜parameter>] bodies are raw text scanned for the
-   [</｜DSML｜parameter>] sentinel.  JSON is handled with nox-json ({!Json}); the
-   tool-call grammar is a bidirectional combinator codec ({!Codec}). *)
+   [</｜DSML｜parameter>] sentinel.  JSON is handled with jsont, wrapped as
+   {!Json}; the tool-call grammar is a bidirectional combinator codec
+   ({!Codec}). *)
 
 (* ===================================================================== *)
 (* Special tokens                                                         *)
@@ -78,6 +79,41 @@ let strip_left_ws s =
     incr i
   done;
   String.sub s !i (n - !i)
+
+(* Generic JSON values, on jsont's released representation. The constructors are
+   re-exported so the pattern matches below read exactly as before; [Value]
+   mirrors the small builder/accessor surface this module needs — compact
+   (minified) [to_string], bytesrw-backed parsing, member lookup. *)
+module Json = struct
+  type t = Jsont.json =
+    | Null of unit Jsont.node
+    | Bool of bool Jsont.node
+    | Number of float Jsont.node
+    | String of string Jsont.node
+    | Array of t list Jsont.node
+    | Object of Jsont.object' Jsont.node
+
+  module Value = struct
+    let string s = Jsont.Json.string s
+    let number f = Jsont.Json.number f
+    let name n = Jsont.Json.name n
+    let member n v = Jsont.Json.mem n v
+    let object' mems = Jsont.Json.object' mems
+    let list l = Jsont.Json.list l
+    let member_key k mems = Jsont.Json.find_mem k mems
+    let of_string s = Jsont_bytesrw.decode_string Jsont.json s
+
+    let of_string_exn s =
+      match of_string s with Ok j -> j | Error e -> invalid_arg ("Json: " ^ e)
+
+    (* Encoding a generic JSON value is total in practice (jsont renders
+       non-finite numbers as null), so the error arm is unreachable. *)
+    let to_string j =
+      match Jsont_bytesrw.encode_string Jsont.json j with
+      | Ok s -> s
+      | Error _ -> "null"
+  end
+end
 
 let json_member k = function
   | Json.Object (mems, _) -> Option.map snd (Json.Value.member_key k mems)

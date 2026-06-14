@@ -31,18 +31,20 @@ let on_event : Agent.event -> unit = function
 let main model_opt workspace system think =
   Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
-  let xdg = Xdg.v ~env:Sys.getenv_opt () in
   let fs = Eio.Stdenv.fs env in
+  let xdg = Xdge.create fs "ds4" in
   let proc = Eio.Stdenv.process_mgr env in
   let net = Eio.Stdenv.net env in
   let model_path =
-    match Deepseek_cmd.Model.resolve ~xdg model_opt with
+    match
+      Deepseek_cmd.Model.resolve ~dir:(Deepseek_cmd.Model.dir xdg) model_opt
+    with
     | Ok p -> p
     | Error e ->
         prerr_endline e;
         exit 1
   in
-  let cache = Eio.Path.(fs / Xdg.cache_dir xdg) in
+  let cache = Xdge.cache_dir xdg in
   (* Run the engine on its own domain so the REPL domain stays responsive. *)
   let engine =
     V4.create ~sw

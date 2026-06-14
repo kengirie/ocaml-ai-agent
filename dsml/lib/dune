@@ -1,4 +1,4 @@
 (library
  (name dsml)
  (public_name deepseek.dsml)
- (libraries nox-json bytesrw))
+ (libraries jsont jsont.bytesrw bytesrw))

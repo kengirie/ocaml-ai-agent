@@ -8,14 +8,14 @@
 
 (executables
  (names ds4_chat ds4_agent)
+ (public_names ds4-chat-cpu ds4-agent-cpu)
  (libraries
   deepseek
   deepseek.cpu
   deepseek.cmd
   deepseek.dsml
-  nox-json
   eio
   eio_main
   cmdliner
-  nox-xdg
+  xdge
   unix))

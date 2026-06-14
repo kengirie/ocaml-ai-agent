@@ -11,7 +11,7 @@
  (name deepseek)
  (public_name deepseek)
  (modes native)
- (libraries eio unix deepseek.dsml nox-json)
+ (libraries eio unix deepseek.dsml)
  (virtual_modules backend)
  (default_implementation deepseek_metal)
  (modules deepseek v4 agent tool toolbox backend))

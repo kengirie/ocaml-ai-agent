@@ -57,12 +57,10 @@ let contains s sub =
   let rec at i = i + m <= n && (String.sub s i m = sub || at (i + 1)) in
   at 0
 
-let run model_path =
-  Eio_main.run @@ fun env ->
+let run env xdg model_path =
   Eio.Switch.run @@ fun sw ->
   let fs = Eio.Stdenv.fs env in
-  let xdg = Xdg.v ~env:Sys.getenv_opt () in
-  let cache = Eio.Path.(fs / Xdg.cache_dir xdg) in
+  let cache = Xdge.cache_dir xdg in
   Printf.printf "loading %s …\n%!" (Filename.basename model_path);
   (* Exercise the worker-domain path: the engine runs off the main domain. *)
   let engine =
@@ -133,6 +131,10 @@ let () =
   match Sys.getenv_opt "DS4_LIVE" with
   | None -> print_string "SKIP - set DS4_LIVE=1 to run the live agent test\n"
   | Some _ -> (
-      match Deepseek_cmd.Model.resolve None with
+      Eio_main.run @@ fun env ->
+      let xdg = Xdge.create (Eio.Stdenv.fs env) "ds4" in
+      match
+        Deepseek_cmd.Model.resolve ~dir:(Deepseek_cmd.Model.dir xdg) None
+      with
       | Error e -> Printf.printf "SKIP - %s\n" e
-      | Ok model_path -> run model_path)
+      | Ok model_path -> run env xdg model_path)

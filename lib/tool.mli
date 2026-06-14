@@ -37,7 +37,7 @@ val name : t -> string
 val description : t -> string
 (** [description t] is the one-line description shown to the model. *)
 
-val schema : t -> Json.t
+val schema : t -> Dsml.Json.t
 (** [schema t] is the JSON Schema for [t]'s arguments, derived from its codec.
 *)
 

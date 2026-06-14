@@ -24,7 +24,7 @@ let guard f =
 (* The model catalogue and the --model resolution policy live in
    {!Deepseek_cmd.Model}; surface its errors through [guard]. *)
 let resolve_model ~xdg model_opt =
-  match Model.resolve ~xdg model_opt with
+  match Model.resolve ~dir:(Model.dir xdg) model_opt with
   | Ok path -> path
   | Error e -> failwith e
 
@@ -41,11 +41,11 @@ let resolve_seed = function
 let chat model_opt system think max_tokens temperature seed prompt =
   guard @@ fun () ->
   Eio_main.run @@ fun env ->
-  let xdg = Xdg.v ~env:Sys.getenv_opt () in
-  let model_path = resolve_model ~xdg model_opt in
   let fs = Eio.Stdenv.fs env in
+  let xdg = Xdge.create fs "ds4" in
+  let model_path = resolve_model ~xdg model_opt in
   let stdout = Eio.Stdenv.stdout env in
-  let cache = Eio.Path.(fs / Xdg.cache_dir xdg) in
+  let cache = Xdge.cache_dir xdg in
   let model = Eio.Path.(fs / model_path) in
   let engine = Ds4.create ~cache ~model () in
   Eio.Flow.copy_string
@@ -63,8 +63,8 @@ let chat model_opt system think max_tokens temperature seed prompt =
 let download (m : Model.t) token_opt =
   guard @@ fun () ->
   Eio_main.run @@ fun env ->
-  let xdg = Xdg.v ~env:Sys.getenv_opt () in
   let fs = Eio.Stdenv.fs env in
+  let xdg = Xdge.create fs "ds4" in
   let proc = Eio.Stdenv.process_mgr env in
   let dir = model_dir xdg in
   Eio.Path.mkdirs ~exists_ok:true ~perm:0o755 Eio.Path.(fs / dir);
@@ -101,7 +101,8 @@ let download (m : Model.t) token_opt =
 
 let list () =
   guard @@ fun () ->
-  let xdg = Xdg.v ~env:Sys.getenv_opt () in
+  Eio_main.run @@ fun env ->
+  let xdg = Xdge.create (Eio.Stdenv.fs env) "ds4" in
   let dir = model_dir xdg in
   Printf.printf "Models (download dir: %s)\n\n" dir;
   Printf.printf "  %-3s %-22s %-9s %s\n" "" "TARGET" "ALIASES" "DESCRIPTION";
