@@ -1,9 +1,12 @@
-(** Deepseek v4 inference engine (Metal).
+(** Deepseek v4 inference engine.
 
     Single prompt/response: open a GGUF model, encode a chat prompt, and stream
     the generated tokens. The heavy C calls release the OCaml runtime lock while
-    Metal runs, and {!create} can place the engine on its own Eio domain so the
-    calling domain keeps running other fibers during inference. *)
+    the backend runs, and {!create} can place the engine on its own Eio domain
+    so the calling domain keeps running other fibers during inference.
+
+    The backend (Apple Metal or CPU) is fixed at link time by the chosen
+    implementation library; this interface is the same for all of them. *)
 
 type engine
 (** A loaded model *)
@@ -18,9 +21,11 @@ val create :
   model:_ Eio.Path.t ->
   unit ->
   engine
-(** [create ~cache ~model ()] materialises the embedded Metal kernels under
-    [cache] and opens the GGUF model at [model]. [cache] is a base cache
-    directory. Raises [Failure] if the model cannot be opened.
+(** [create ~cache ~model ()] materialises the backend's embedded GPU kernels
+    under [cache] (the Metal backend writes its [.metal] kernels there; the CPU
+    backend has none, so this is a no-op) and opens the GGUF model at [model].
+    [cache] is a base cache directory. Raises [Failure] if the model cannot be
+    opened.
 
     [domain_mgr] runs the engine on a dedicated worker domain (one
     {!Eio.Domain_manager.run} hosting a job loop): every inference call is run

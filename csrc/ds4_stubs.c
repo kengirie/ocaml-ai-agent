@@ -1,5 +1,10 @@
 /* =========================================================================
- * OCaml 5 FFI to the DS4 Metal inference engine.
+ * OCaml 5 FFI to the DS4 inference engine.
+ *
+ * Backend-agnostic: the backend (Metal/CUDA/CPU) is chosen at link time by
+ * which engine archive this stub is bundled with, and passed in at open time as
+ * a ds4_backend value (see caml_ds4_engine_open). One copy of this file is
+ * compiled into each dune implementation library (lib_metal/, lib_cpu/).
  * ========================================================================= */
 
 #include <stdlib.h>
@@ -62,8 +67,8 @@ static struct custom_operations ds4_session_ops = {
     custom_fixed_length_default
 };
 
-CAMLprim value caml_ds4_engine_open(value v_model) {
-    CAMLparam1(v_model);
+CAMLprim value caml_ds4_engine_open(value v_backend, value v_model) {
+    CAMLparam2(v_backend, v_model);
     CAMLlocal1(v_engine);
 
     /* Copy the path out before releasing the runtime lock; the GC may move the
@@ -73,7 +78,9 @@ CAMLprim value caml_ds4_engine_open(value v_model) {
     ds4_engine_options opt;
     memset(&opt, 0, sizeof(opt));
     opt.model_path = model_path;
-    opt.backend = DS4_BACKEND_METAL;
+    /* The id comes from the linked implementation's Backend.id and must match
+     * the backend object compiled into this library's archive. */
+    opt.backend = (ds4_backend)Int_val(v_backend);
     opt.mtp_draft_tokens = 1;
     opt.mtp_margin = 3.0f;
 

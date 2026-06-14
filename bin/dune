@@ -1,7 +1,13 @@
+;; The binaries select their inference backend by linking an implementation of
+;; the virtual [deepseek] library: [deepseek.metal] here. (Listing no
+;; implementation would fall back to the library's default_implementation, which
+;; is also Metal.) The CPU builds of these same programs live in ./cpu.
+
 (executables
  (names ds4_chat ds4_agent)
  (libraries
   deepseek
+  deepseek.metal
   deepseek.cmd
   deepseek.dsml
   nox-json

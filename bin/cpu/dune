@@ -1,0 +1,21 @@
+;; CPU builds of the bin/ programs, from the SAME sources. The .ml files live
+;; once in ../; here they are copied at build time and linked against
+;; [deepseek.cpu] instead of [deepseek.metal]. Result: bin/cpu/ds4_chat.exe and
+;; bin/cpu/ds4_agent.exe — identical code, CPU backend.
+
+(copy_files
+ (files ../*.ml))
+
+(executables
+ (names ds4_chat ds4_agent)
+ (libraries
+  deepseek
+  deepseek.cpu
+  deepseek.cmd
+  deepseek.dsml
+  nox-json
+  eio
+  eio_main
+  cmdliner
+  nox-xdg
+  unix))

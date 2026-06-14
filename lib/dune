@@ -1,25 +1,17 @@
-(rule
- (target shaders.ml)
- (deps
-  ../gen/gen_shaders.exe
-  (glob_files ../csrc/metal/*.metal))
- (action
-  (with-stdout-to
-   shaders.ml
-   (run %{deps}))))
-
-(copy_files ../csrc/libds4_core.a)
+;; Virtual library: pure OCaml, backend-agnostic. The C FFI stub, the engine
+;; archive, and the backend-specific link flags all live in the implementation
+;; libraries (../lib_metal, ../lib_cpu), each of which (implements deepseek) and
+;; supplies the virtual [Backend] module. A consumer links one implementation;
+;; with no explicit choice it gets (default_implementation deepseek_metal).
+;;
+;; Dune does not allow foreign_stubs/foreign_archives in a virtual library, so
+;; none appear here — that is exactly why the C moves down into the variants.
 
 (library
  (name deepseek)
  (public_name deepseek)
  (modes native)
  (libraries eio unix deepseek.dsml nox-json)
- (modules deepseek v4 shaders agent tool toolbox)
- (foreign_archives ds4_core)
- (foreign_stubs
-  (language c)
-  (names ds4_stubs)
-  (include_dirs ../csrc))
- (c_library_flags
-  (-lm -pthread -framework Foundation -framework Metal)))
+ (virtual_modules backend)
+ (default_implementation deepseek_metal)
+ (modules deepseek v4 agent tool toolbox backend))

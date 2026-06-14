@@ -1,0 +1,12 @@
+;; Backend C-flag discovery (discover.ml): writes core_cflags / objc_cflags,
+;; which the engine-archive rules in ../lib_metal and ../lib_cpu read via
+;; %{read-lines:...} so the native-arch flags differ correctly per platform.
+
+(executable
+ (name discover)
+ (libraries dune-configurator))
+
+(rule
+ (targets core_cflags objc_cflags)
+ (action
+  (run ./discover.exe)))

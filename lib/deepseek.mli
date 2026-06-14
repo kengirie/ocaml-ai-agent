@@ -1,7 +1,10 @@
-(** Run DeepSeek-V4 locally on Apple Metal, and build agents on top of it.
+(** Run DeepSeek-V4 locally, and build agents on top of it.
 
     This library wraps the vendored DeepSeek-V4 Flash/Pro inference engine and
-    layers a small tool-using agent over it:
+    layers a small tool-using agent over it. The engine is a {e virtual}
+    library: the inference backend is chosen at link time by depending on an
+    implementation — [deepseek.metal] (Apple Metal, the default) or
+    [deepseek.cpu] — so the API below is identical regardless of backend.
 
     - {!V4} loads a GGUF model and generates text (one-shot), or through a
       persistent session whose KV cache survives across turns.

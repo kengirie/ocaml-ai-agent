@@ -13,3 +13,12 @@
   eio_main
   nox-xdg)
  (modules test_toolbox live_agent_mock))
+
+; Separate stanza: this one selects the CPU implementation explicitly, whereas
+; the tests above take the default (Metal). Two executables, two backends, one
+; build tree.
+
+(test
+ (name cpu_smoke)
+ (libraries deepseek deepseek.cpu)
+ (modules cpu_smoke))

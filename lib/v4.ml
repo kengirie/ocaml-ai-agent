@@ -4,10 +4,15 @@ type think = [ `None | `High | `Max ]
 
 let think_to_int = function `None -> 0 | `High -> 1 | `Max -> 2
 
-(* C FFI (ds4_stubs.c). The heavy calls release the OCaml runtime lock while
-   Metal runs; they must never touch the engine concurrently, so all of them are
-   funnelled through [run] onto the engine's worker domain (or run inline). *)
-external c_engine_open : string -> raw_engine = "caml_ds4_engine_open"
+(* C FFI (csrc/ds4_stubs.c, compiled into each backend implementation). The
+   heavy calls release the OCaml runtime lock while the accelerator runs; they
+   must never touch the engine concurrently, so all of them are funnelled
+   through [run] onto the engine's worker domain (or run inline).
+
+   [c_engine_open] takes the backend id ([Backend.id]) so the one stub serves
+   every backend; it must match the engine archive linked by the chosen
+   implementation. *)
+external c_engine_open : int -> string -> raw_engine = "caml_ds4_engine_open"
 external c_model_name : raw_engine -> string = "caml_ds4_engine_model_name"
 external c_vocab_size : raw_engine -> int = "caml_ds4_engine_vocab_size"
 external c_token_eos : raw_engine -> int = "caml_ds4_token_eos"
@@ -74,25 +79,34 @@ let spawn_worker ~sw domain_mgr : worker =
           loop ()));
   stream
 
-(* Write each embedded Metal kernel into [metal_dir] and point the engine at it
-   via the per-kernel DS4_METAL_<NAME>_SOURCE override the C backend reads at
-   open time. Makes the binary relocatable instead of cwd-relative. *)
-let materialize_shaders ~metal_dir =
-  Eio.Path.mkdirs ~exists_ok:true ~perm:0o755 metal_dir;
-  List.iter
-    (fun (name, body) ->
-      let path = Eio.Path.(metal_dir / (name ^ ".metal")) in
-      Eio.Path.save ~create:(`Or_truncate 0o644) path body;
-      let var = "DS4_METAL_" ^ String.uppercase_ascii name ^ "_SOURCE" in
-      Unix.putenv var (Eio.Path.native_exn path))
-    Shaders.sources
+(* Write each embedded GPU kernel supplied by the active backend into
+   [shader_dir] and point the engine at it via the per-kernel
+   DS4_METAL_<NAME>_SOURCE override the C backend reads at open time. Makes the
+   binary relocatable instead of cwd-relative.
+
+   [Backend.sources] is the chosen implementation's kernel list: the Metal
+   backend embeds its .metal kernels here, while backends that compile their
+   kernels at build time (CPU, CUDA) supply an empty list, making this a no-op. *)
+let materialize_shaders ~shader_dir =
+  match Backend.sources with
+  | [] -> ()
+  | sources ->
+      Eio.Path.mkdirs ~exists_ok:true ~perm:0o755 shader_dir;
+      List.iter
+        (fun (name, body) ->
+          let path = Eio.Path.(shader_dir / (name ^ ".metal")) in
+          Eio.Path.save ~create:(`Or_truncate 0o644) path body;
+          let var = "DS4_METAL_" ^ String.uppercase_ascii name ^ "_SOURCE" in
+          Unix.putenv var (Eio.Path.native_exn path))
+        sources
 
 let create ?domain_mgr ?sw ~cache ~model () =
   (* Shader I/O and path resolution use the calling domain's filesystem
      capability, so they stay here; only [c_engine_open] is handed to the
-     worker. *)
-  let metal_dir = Eio.Path.(cache / "ds4" / "metal") in
-  materialize_shaders ~metal_dir;
+     worker. [materialize_shaders] is a no-op for backends with no embedded
+     kernels (CPU, CUDA). *)
+  let shader_dir = Eio.Path.(cache / "ds4" / "metal") in
+  materialize_shaders ~shader_dir;
   let path = Eio.Path.native_exn model in
   let worker =
     match (domain_mgr, sw) with
@@ -102,8 +116,8 @@ let create ?domain_mgr ?sw ~cache ~model () =
   in
   let raw =
     match worker with
-    | Some w -> run_on w (fun () -> c_engine_open path)
-    | None -> c_engine_open path
+    | Some w -> run_on w (fun () -> c_engine_open Backend.id path)
+    | None -> c_engine_open Backend.id path
   in
   { raw; worker }
 
