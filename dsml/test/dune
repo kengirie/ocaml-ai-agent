@@ -1,0 +1,4 @@
+(test
+ (name test_dsml)
+ (libraries dsml nox-json bytesrw)
+ (modules test_dsml))

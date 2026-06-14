@@ -1,0 +1,33 @@
+;; OCaml binding to the vendored DS4 Metal core.
+;;
+;;  - shaders.ml is generated from the vendored metal/*.metal kernels.
+;;  - libds4_core.a is the vendored engine archive, copied in from ../csrc.
+;;  - ds4_stubs.c is the FFI; ds4.h is found under ../csrc.
+;;  - c_library_flags carry the Metal link deps through to any executable that
+;;    depends on this library.
+
+(rule
+ (target shaders.ml)
+ (deps
+  ../gen/gen_shaders.exe
+  (glob_files ../csrc/metal/*.metal))
+ (action
+  (with-stdout-to
+   shaders.ml
+   (run %{deps}))))
+
+(copy_files ../csrc/libds4_core.a)
+
+(library
+ (name ds4)
+ (libraries eio unix)
+ (modules ds4 shaders)
+ (foreign_archives ds4_core)
+ (foreign_stubs
+  (language c)
+  (names ds4_stubs)
+  ;; include_dirs (not a raw -I flag) so dune tracks the csrc headers and
+  ;; recompiles the stub when the engine ABI changes.
+  (include_dirs ../csrc))
+ (c_library_flags
+  (-lm -pthread -framework Foundation -framework Metal)))

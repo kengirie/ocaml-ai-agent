@@ -1,0 +1,3 @@
+(executable
+ (name ds4_chat)
+ (libraries ds4 eio_main cmdliner nox-xdg unix))

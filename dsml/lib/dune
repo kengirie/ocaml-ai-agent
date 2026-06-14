@@ -1,0 +1,4 @@
+(library
+ (name dsml)
+ (public_name dsml)
+ (libraries nox-json bytesrw))

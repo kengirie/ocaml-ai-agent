@@ -1,0 +1,21 @@
+(lang dune 3.21)
+(using mdx 0.4)
+(name dsml)
+
+(generate_opam_files true)
+(implicit_transitive_deps false)
+
+(license ISC)
+(authors "Anil Madhavapeddy")
+(maintainers "Anil Madhavapeddy <anil@recoil.org>")
+(source (tangled anil.recoil.org/ocaml-dsml))
+
+(package
+ (name dsml)
+ (synopsis "Deepseek v4 tool calling format")
+ (tags (org:blacksun deepseek llm))
+ (description "Library to encode DeepSeek-V4 prompts and parse model replies.")
+ (depends
+  (ocaml (>= 5.2.0))
+  nox-json
+  bytesrw))
