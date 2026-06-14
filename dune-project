@@ -1,2 +1,19 @@
-(lang dune 3.20)
-(name ocaml_ds4)
+(lang dune 3.21)
+(using mdx 0.4)
+(name deepseek)
+
+(generate_opam_files true)
+(implicit_transitive_deps false)
+
+(license ISC)
+(authors "Anil Madhavapeddy")
+(maintainers "Anil Madhavapeddy <anil@recoil.org>")
+(source (tangled anil.recoil.org/ocaml-deepseek))
+
+(package
+ (name deepseek)
+ (synopsis "Deepseek v4 LLM")
+ (tags (org:blacksun deepseek llm))
+ (description "Library to run Deepseek on Metal")
+ (depends
+  (ocaml (>= 5.2.0))))

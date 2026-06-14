@@ -7,6 +7,8 @@
    Models live under $XDG_DATA_HOME/ds4 (e.g. ~/.local/share/ds4); [chat] with
    no --model picks the first *.gguf found there. *)
 
+module Ds4 = Deepseek.V4
+
 let model_dir xdg = Filename.concat (Xdg.data_dir xdg) "ds4"
 
 (* Run [f], turning any raised error into a clean CLI message (Cmd.eval_result
