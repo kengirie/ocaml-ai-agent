@@ -1,15 +1,29 @@
-; test_toolbox is a pure Eio-mock unit test. live_agent_mock drives the real
-; engine with mocked tool I/O; it is registered so `dune runtest` includes it,
-; but skips the multi-GB model load unless DS4_LIVE is set.
+; test_toolbox: pure Eio-mock unit test of the tool/codec path (CPU default).
 
-(tests
- (names test_toolbox live_agent_mock)
- (libraries deepseek deepseek.cmd deepseek.dsml eio eio.mock eio_main xdge)
- (modules test_toolbox live_agent_mock))
+(test
+ (name test_toolbox)
+ (libraries deepseek deepseek.dsml eio eio.mock)
+ (modules test_toolbox))
 
-; Separate stanza: this one selects the CPU implementation explicitly, whereas
-; the tests above take the default (Metal). Two executables, two backends, one
-; build tree.
+; live_agent_mock: drives the real engine with mocked tool I/O. This is the CPU
+; build (links deepseek.cpu); the Metal build of the SAME source lives in
+; ./metal. Both are registered so `dune runtest` includes them, but each skips
+; the multi-GB model load unless DS4_LIVE is set.
+
+(test
+ (name live_agent_mock)
+ (libraries
+  deepseek
+  deepseek.cpu
+  deepseek.cmd
+  deepseek.dsml
+  eio
+  eio.mock
+  eio_main
+  xdge)
+ (modules live_agent_mock))
+
+; CPU backend build/link smoke test.
 
 (test
  (name cpu_smoke)

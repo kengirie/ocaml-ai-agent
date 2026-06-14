@@ -11,6 +11,10 @@
 type engine
 (** A loaded model *)
 
+val backend : [ `Metal | `Cuda | `Cpu ]
+(** The inference backend compiled into this build, fixed at link time by the
+    chosen implementation library. *)
+
 type think = [ `None | `High | `Max ]
 (** Reasoning effort encoded into the chat prompt. *)
 

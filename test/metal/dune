@@ -1,0 +1,22 @@
+; Metal build of the live agent test, from the SAME ../live_agent_mock.ml source
+; (mirrors bin/cpu). macOS-only — it links deepseek.metal; on other systems this
+; whole directory is inert and only the CPU build in ../ runs. Skips the
+; multi-GB model load unless DS4_LIVE is set.
+
+(copy_files
+ (files ../live_agent_mock.ml))
+
+(test
+ (name live_agent_mock)
+ (enabled_if
+  (= %{system} macosx))
+ (libraries
+  deepseek
+  deepseek.metal
+  deepseek.cmd
+  deepseek.dsml
+  eio
+  eio.mock
+  eio_main
+  xdge)
+ (modules live_agent_mock))

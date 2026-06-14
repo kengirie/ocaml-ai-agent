@@ -1,11 +1,13 @@
 ;; The binaries select their inference backend by linking an implementation of
-;; the virtual [deepseek] library: [deepseek.metal] here. (Listing no
-;; implementation would fall back to the library's default_implementation, which
-;; is also Metal.) The CPU builds of these same programs live in ./cpu.
+;; the virtual [deepseek] library: [deepseek.metal] here. Because Metal is
+;; macOS-only, these executables are gated to macOS; the portable CPU builds of
+;; the same programs live in ./cpu and build everywhere.
 
 (executables
  (names ds4_chat ds4_agent)
  (public_names ds4-chat ds4-agent)
+ (enabled_if
+  (= %{system} macosx))
  (libraries
   deepseek
   deepseek.metal

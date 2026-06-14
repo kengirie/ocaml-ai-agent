@@ -9,7 +9,7 @@ let think_to_int = function `None -> 0 | `High -> 1 | `Max -> 2
    must never touch the engine concurrently, so all of them are funnelled
    through [run] onto the engine's worker domain (or run inline).
 
-   [c_engine_open] takes the backend id ([Backend.id]) so the one stub serves
+   [c_engine_open] takes the backend id (see [backend_id]) so the one stub serves
    every backend; it must match the engine archive linked by the chosen
    implementation. *)
 external c_engine_open : int -> string -> raw_engine = "caml_ds4_engine_open"
@@ -100,6 +100,13 @@ let materialize_shaders ~shader_dir =
           Unix.putenv var (Eio.Path.native_exn path))
         sources
 
+let backend = Backend.which
+
+(* The ds4_backend enum the C engine expects (csrc/ds4.h): Metal=0, Cuda=1,
+   Cpu=2. Kept here, at the C boundary, so the [Backend] interface stays a plain
+   variant rather than a magic integer. *)
+let backend_id = match backend with `Metal -> 0 | `Cuda -> 1 | `Cpu -> 2
+
 let create ?domain_mgr ?sw ~cache ~model () =
   (* Shader I/O and path resolution use the calling domain's filesystem
      capability, so they stay here; only [c_engine_open] is handed to the
@@ -116,8 +123,8 @@ let create ?domain_mgr ?sw ~cache ~model () =
   in
   let raw =
     match worker with
-    | Some w -> run_on w (fun () -> c_engine_open Backend.id path)
-    | None -> c_engine_open Backend.id path
+    | Some w -> run_on w (fun () -> c_engine_open backend_id path)
+    | None -> c_engine_open backend_id path
   in
   { raw; worker }
 

@@ -5,11 +5,12 @@
     final executable selects exactly one by depending on that implementation (or
     via the virtual library's [default_implementation]). The selected backend's
     engine archive and link flags come from the same implementation library, so
-    {!id} and the linked native code always agree. *)
+    {!which} and the linked native code always agree. *)
 
-val id : int
-(** The [ds4_backend] enum value passed to [ds4_engine_open]: Metal = 0, CUDA =
-    1, CPU = 2. Must match the engine archive this implementation links. *)
+val which : [ `Metal | `Cuda | `Cpu ]
+(** Which backend this implementation is. {!V4} maps it to the [ds4_backend]
+    enum the C engine expects; it must match the engine archive this
+    implementation links. *)
 
 val sources : (string * string) list
 (** Embedded GPU kernels as [(name, source)] pairs, materialised to disk at

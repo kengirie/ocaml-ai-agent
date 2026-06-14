@@ -128,9 +128,15 @@ let run env xdg model_path =
   end
 
 let () =
+  let backend =
+    match V4.backend with `Metal -> "metal" | `Cuda -> "cuda" | `Cpu -> "cpu"
+  in
   match Sys.getenv_opt "DS4_LIVE" with
-  | None -> print_string "SKIP - set DS4_LIVE=1 to run the live agent test\n"
+  | None ->
+      Printf.printf "SKIP - %s live agent test (set DS4_LIVE=1 to run)\n"
+        backend
   | Some _ -> (
+      Printf.printf "running %s live agent test\n%!" backend;
       Eio_main.run @@ fun env ->
       let xdg = Xdge.create (Eio.Stdenv.fs env) "ds4" in
       match

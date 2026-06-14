@@ -1,18 +1,22 @@
-;; Metal backend implementation of the virtual [deepseek] library.
+;; Metal backend implementation of the virtual [deepseek] library — macOS only.
 ;;
 ;; Owns everything backend-specific: the engine archive (ds4.c + the Metal
 ;; backend object ds4_metal.o), a copy of the shared FFI stub, the embedded
 ;; Metal kernels, and the Foundation/Metal link flags. The core C sources are
 ;; the vendored ../csrc tree, compiled here the Metal way.
 ;;
-;; Compile flags come from ../config/{core_cflags,objc_cflags}, written by
-;; discover.ml, so the native-arch flag is chosen per platform. (Metal itself is
-;; macOS-only; gate this library with enabled_if for a Linux build.)
+;; Every stanza is gated on the host being macOS (ds4_metal.m is Objective-C and
+;; links Apple frameworks), so on other systems this whole directory is inert and
+;; the build falls back to the CPU implementation (the virtual library's
+;; default_implementation). Compile flags come from ../config/{core,objc}_cflags
+;; (discover.ml), choosing the native-arch flag per platform.
 
 (library
  (name deepseek_metal)
  (public_name deepseek.metal)
  (implements deepseek)
+ (enabled_if
+  (= %{system} macosx))
  (modes native)
  (modules backend shaders)
  (private_modules shaders)
@@ -26,12 +30,17 @@
 
 ;; The shared, backend-agnostic FFI stub, compiled into this implementation.
 
-(copy_files ../csrc/ds4_stubs.c)
+(copy_files
+ (files ../csrc/ds4_stubs.c)
+ (enabled_if
+  (= %{system} macosx)))
 
 ;; Embed the Metal kernels into the generated Shaders module (Backend.sources).
 
 (rule
  (target shaders.ml)
+ (enabled_if
+  (= %{system} macosx))
  (deps
   ../gen/gen_shaders.exe
   (glob_files ../csrc/metal/*.metal))
@@ -44,6 +53,8 @@
 
 (rule
  (target ds4.o)
+ (enabled_if
+  (= %{system} macosx))
  (deps
   ../csrc/ds4.c
   ../csrc/ds4.h
@@ -65,6 +76,8 @@
 
 (rule
  (target ds4_ssd.o)
+ (enabled_if
+  (= %{system} macosx))
  (deps ../csrc/ds4_ssd.c ../csrc/ds4_ssd.h ../config/core_cflags)
  (action
   (run
@@ -79,6 +92,8 @@
 
 (rule
  (target ds4_distributed.o)
+ (enabled_if
+  (= %{system} macosx))
  (deps
   ../csrc/ds4_distributed.c
   ../csrc/ds4_distributed.h
@@ -98,6 +113,8 @@
 
 (rule
  (target ds4_metal.o)
+ (enabled_if
+  (= %{system} macosx))
  (deps
   ../csrc/ds4_metal.m
   ../csrc/ds4.h
@@ -118,6 +135,8 @@
 
 (rule
  (target libds4_core_metal.a)
+ (enabled_if
+  (= %{system} macosx))
  (deps ds4.o ds4_ssd.o ds4_distributed.o ds4_metal.o)
  (action
   (run
