@@ -15,7 +15,7 @@
  (synopsis "Deepseek v4 LLM")
  (tags (org:blacksun deepseek llm))
  (description
-  "Library to run Deepseek v4 locally, with a selectable inference backend (Apple Metal or CPU).")
+  "Library and binary (`humpty`) to run Deepseek v4 locally, with a selectable inference backend (Apple Metal or CPU).")
  (depends
   (ocaml (>= 5.2.0))
   (dune-configurator :build)

@@ -2,7 +2,7 @@
 opam-version: "2.0"
 synopsis: "Deepseek v4 LLM"
 description:
-  "Library to run Deepseek v4 locally, with a selectable inference backend (Apple Metal or CPU)."
+  "Library and binary (`humpty`) to run Deepseek v4 locally, with a selectable inference backend (Apple Metal or CPU)."
 maintainer: ["Anil Madhavapeddy <anil@recoil.org>"]
 authors: ["Anil Madhavapeddy"]
 license: "ISC"
