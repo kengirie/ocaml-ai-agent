@@ -1,14 +1,3 @@
-;; CPU backend implementation of the virtual [deepseek] library.
-;;
-;; Same vendored ../csrc core as the Metal variant, but ds4.c is compiled with
-;; -DDS4_NO_GPU (the upstream CPU executor) and there is no GPU backend object
-;; and no framework link flags. Mirrors the upstream Makefile `cpu` target's
-;; CPU_CORE_OBJS = ds4_cpu.o ds4_distributed.o ds4_ssd.o.
-;;
-;; Compile flags come from ../config/core_cflags, written by discover.ml, so this
-;; builds on both macOS (-mcpu=native) and Linux/x86 (-march=native plus the GNU
-;; / finite-math knobs) from the same rules.
-
 (library
  (name deepseek_cpu)
  (public_name deepseek.cpu)

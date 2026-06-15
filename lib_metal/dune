@@ -1,16 +1,5 @@
 ;; Metal backend implementation of the virtual [deepseek] library — macOS only.
 ;;
-;; Owns everything backend-specific: the engine archive (ds4.c + the Metal
-;; backend object ds4_metal.o), a copy of the shared FFI stub, the embedded
-;; Metal kernels, and the Foundation/Metal link flags. The core C sources are
-;; the vendored ../csrc tree, compiled here the Metal way.
-;;
-;; Every stanza is gated on the host being macOS (ds4_metal.m is Objective-C and
-;; links Apple frameworks), so on other systems this whole directory is inert and
-;; the build falls back to the CPU implementation (the virtual library's
-;; default_implementation). Compile flags come from ../config/{core,objc}_cflags
-;; (discover.ml), choosing the native-arch flag per platform.
-
 (library
  (name deepseek_metal)
  (public_name deepseek.metal)

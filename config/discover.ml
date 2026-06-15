@@ -17,7 +17,20 @@ let () =
         match C.ocaml_config_var c "system" with Some s -> s | None -> ""
       in
       let is_macos = system = "macosx" in
-      let base = [ "-O3"; "-ffast-math"; "-g"; "-Wall"; "-Wextra" ] in
+      (* -Wall/-Wextra are useful, but the vendored engine (ds4.c) carries a
+         number of unused statics and parameters; silence just those two so the
+         build stays quiet without dropping the rest of the warning coverage. *)
+      let base =
+        [
+          "-O3";
+          "-ffast-math";
+          "-g";
+          "-Wall";
+          "-Wextra";
+          "-Wno-unused-function";
+          "-Wno-unused-parameter";
+        ]
+      in
       (* Apple clang spells "tune for this machine" -mcpu; GCC/clang on
          Linux/x86 use -march. *)
       let arch = if is_macos then [ "-mcpu=native" ] else [ "-march=native" ] in

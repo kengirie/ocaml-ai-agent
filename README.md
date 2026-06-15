@@ -1,10 +1,11 @@
 # ocaml-deepseek -- bindings to the Deepseek v4 open LLM
 
-OCaml bindings and a command-line interface to the DS4 inference engine,
-specialised for the Metal backend on macOS.
+OCaml bindings and a command-line interface to the [DS4 inference
+engine](https://github.com/antirez/ds4), specialised for the Metal backend on
+macOS.
 
-Requires OCaml 5, `dune`, `eio`, `cmdliner`, `nox-xdg`, and the Xcode
-Metal toolchain (macOS, Apple Silicon).
+Requires OCaml 5, and (for the GPU backend) the Xcode Metal toolchain (macOS,
+Apple Silicon).
 
 ```sh
 dune build
