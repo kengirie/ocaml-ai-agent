@@ -1,11 +1,11 @@
-;; The binaries select their inference backend by linking an implementation of
-;; the virtual [deepseek] library: [deepseek.metal] here. Because Metal is
-;; macOS-only, these executables are gated to macOS; the portable CPU builds of
-;; the same programs live in ./cpu and build everywhere.
+;; The [humpty] binary selects its inference backend by linking an
+;; implementation of the virtual [deepseek] library: [deepseek.metal] here.
+;; Because Metal is macOS-only, this executable is gated to macOS; the portable
+;; CPU build of the same program lives in ./cpu and builds everywhere.
 
-(executables
- (names ds4_chat ds4_agent)
- (public_names ds4-chat ds4-agent)
+(executable
+ (name humpty)
+ (public_name humpty-metal)
  (enabled_if
   (= %{system} macosx))
  (libraries

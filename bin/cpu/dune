@@ -1,14 +1,14 @@
-;; CPU builds of the bin/ programs, from the SAME sources. The .ml files live
-;; once in ../; here they are copied at build time and linked against
-;; [deepseek.cpu] instead of [deepseek.metal]. Result: bin/cpu/ds4_chat.exe and
-;; bin/cpu/ds4_agent.exe — identical code, CPU backend.
+;; CPU build of the bin/ program, from the SAME source. The .ml file lives once
+;; in ../; here it is copied at build time and linked against [deepseek.cpu]
+;; instead of [deepseek.metal]. Result: bin/cpu/humpty.exe — identical code,
+;; CPU backend.
 
 (copy_files
- (files ../*.ml))
+ (files ../humpty.ml))
 
-(executables
- (names ds4_chat ds4_agent)
- (public_names ds4-chat-cpu ds4-agent-cpu)
+(executable
+ (name humpty)
+ (public_name humpty-cpu)
  (libraries
   deepseek
   deepseek.cpu
