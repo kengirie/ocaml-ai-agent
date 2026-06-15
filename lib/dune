@@ -14,7 +14,7 @@
  (name deepseek)
  (public_name deepseek)
  (modes native)
- (libraries eio unix deepseek.dsml)
+ (libraries eio unix logs deepseek.dsml)
  (virtual_modules backend)
  (default_implementation deepseek_cpu)
  (modules deepseek v4 agent tool toolbox backend))

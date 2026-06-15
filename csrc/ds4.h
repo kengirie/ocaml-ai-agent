@@ -173,6 +173,27 @@ ds4_context_memory ds4_context_memory_estimate_with_prefill(
         uint32_t prefill_chunk);
 bool ds4_log_is_tty(FILE *fp);
 void ds4_log(FILE *fp, ds4_log_type type, const char *fmt, ...);
+
+/* Diagnostic log sink.
+ *
+ * By default the engine writes its diagnostics straight to stderr (via
+ * ds4_diag, and via ds4_log when its FILE* is stderr/stdout).  A host
+ * application can install a callback to intercept them instead — e.g. to route
+ * them into its own logging library rather than the process's standard error.
+ *
+ * The callback receives the fully formatted, NUL-terminated message (the engine
+ * does not add or strip a trailing newline) and the ds4_log_type, so the
+ * consumer can pick a severity and colourise as it sees fit.  Pass fn = NULL to
+ * restore the stderr default.  The callback may be invoked from whichever thread
+ * the engine runs work on (including internal worker threads), so the
+ * implementation is responsible for any locking / runtime-lock handling. */
+typedef void (*ds4_log_fn)(void *ud, ds4_log_type type, const char *msg);
+void ds4_set_log_callback(ds4_log_fn fn, void *ud);
+
+/* Emit an untyped (DS4_LOG_DEFAULT) diagnostic through the sink.  This is the
+ * routed replacement for the engine's historical `fprintf(stderr, ...)` calls:
+ * with no callback installed it behaves exactly like that fprintf. */
+void ds4_diag(const char *fmt, ...);
 int ds4_engine_generate_argmax(ds4_engine *e, const ds4_tokens *prompt,
                                int n_predict, int ctx_size,
                                ds4_token_emit_fn emit,

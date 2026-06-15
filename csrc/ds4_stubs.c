@@ -7,17 +7,134 @@
  * compiled into each dune implementation library (lib_metal/, lib_cpu/).
  * ========================================================================= */
 
+#include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include <caml/mlvalues.h>
-#include <caml/memory.h>
 #include <caml/alloc.h>
-#include <caml/fail.h>
+#include <caml/callback.h>
 #include <caml/custom.h>
+#include <caml/fail.h>
+#include <caml/memory.h>
+#include <caml/mlvalues.h>
 #include <caml/threads.h>
 
 #include "ds4.h"
+
+/* =========================================================================
+ * Diagnostic log forwarding.
+ *
+ * The C engine emits diagnostics through ds4_set_log_callback (csrc/ds4.h).  We
+ * register [ds4_log_trampoline], which forwards each message to an OCaml
+ * closure ([V4.forward_logs] installs one that reports into the Logs library).
+ *
+ * Two hazards shape this:
+ *
+ *  - Runtime lock.  The heavy engine calls below run inside
+ *    caml_release_runtime_system(); a diagnostic fired there must re-acquire the
+ *    runtime lock before touching any OCaml value.  [g_runtime_released] tracks
+ *    whether we are in such a section (the engine serialises its calls onto a
+ *    single thread, so a plain flag is enough), and DS4_ENTER/LEAVE_BLOCKING
+ *    keep it in sync.  Fast lock-holding calls (tokenise, sample) leave it 0 and
+ *    the trampoline calls straight through.
+ *
+ *  - Foreign threads.  A few engine diagnostics (the Metal streaming-expert
+ *    pread workers) run on raw pthreads the OCaml runtime does not know about;
+ *    calling into OCaml from there is undefined.  We record the engine thread in
+ *    [g_engine_tid] and any message from another thread is written to stderr
+ *    instead.  (The one such site that survived migration in ds4_metal.m already
+ *    writes to stderr directly, so this is defence in depth.)
+ * ========================================================================= */
+
+static value g_log_closure = Val_unit;
+static int g_log_handler_installed = 0;
+static volatile int g_runtime_released = 0;
+static volatile int g_log_min = 3; /* 0=Error 1=Warning 2=Info 3=Debug */
+static volatile pthread_t g_engine_tid;
+
+/* Mark the start/end of a runtime-lock-released engine call.  Recording the
+ * thread before releasing means a diagnostic fired during the call is correctly
+ * attributed to the engine thread. */
+#define DS4_ENTER_BLOCKING()              \
+    do {                                  \
+        g_engine_tid = pthread_self();    \
+        caml_release_runtime_system();    \
+        g_runtime_released = 1;           \
+    } while (0)
+#define DS4_LEAVE_BLOCKING()              \
+    do {                                  \
+        g_runtime_released = 0;           \
+        caml_acquire_runtime_system();    \
+    } while (0)
+
+/* Map a ds4_log_type to the integer level the OCaml side expects (and that
+ * g_log_min thresholds on): 0=Error, 1=Warning, 2=Info, 3=Debug. */
+static int ds4_log_level_of_type(ds4_log_type type) {
+    switch (type) {
+    case DS4_LOG_ERROR:
+        return 0;
+    case DS4_LOG_WARNING:
+        return 1;
+    case DS4_LOG_OK:
+    case DS4_LOG_TIMING:
+        return 2;
+    default:
+        return 3; /* DEFAULT, PREFILL, GENERATION, KVCACHE, TOOL */
+    }
+}
+
+static void ds4_log_trampoline(void *ud, ds4_log_type type, const char *msg) {
+    (void)ud;
+    const int level = ds4_log_level_of_type(type);
+    if (level > g_log_min)
+        return; /* below the requested verbosity: drop before crossing into OCaml */
+
+    if (!pthread_equal(pthread_self(), g_engine_tid)) {
+        /* Not the OCaml engine thread (e.g. a Metal worker pthread): cannot call
+         * into the runtime safely, so fall back to stderr. */
+        fputs(msg, stderr);
+        return;
+    }
+
+    const int reacquire = g_runtime_released;
+    if (reacquire)
+        caml_acquire_runtime_system();
+    value v_msg = caml_copy_string(msg);
+    caml_callback2(g_log_closure, Val_int(level), v_msg);
+    if (reacquire)
+        caml_release_runtime_system();
+}
+
+/* Install [v_closure] as the diagnostic handler.  Called with an OCaml closure
+ * of type [int -> string -> unit] (level, message). */
+CAMLprim value caml_ds4_set_log_handler(value v_closure) {
+    CAMLparam1(v_closure);
+    if (!g_log_handler_installed) {
+        caml_register_generational_global_root(&g_log_closure);
+        g_log_handler_installed = 1;
+    }
+    caml_modify_generational_global_root(&g_log_closure, v_closure);
+    ds4_set_log_callback(ds4_log_trampoline, NULL);
+    CAMLreturn(Val_unit);
+}
+
+CAMLprim value caml_ds4_clear_log_handler(value v_unit) {
+    CAMLparam1(v_unit);
+    ds4_set_log_callback(NULL, NULL);
+    if (g_log_handler_installed)
+        caml_modify_generational_global_root(&g_log_closure, Val_unit);
+    CAMLreturn(Val_unit);
+}
+
+/* Set the minimum severity that crosses into OCaml (0=Error .. 3=Debug, or -1
+ * to drop everything).  Lets the firehose of debug diagnostics be discarded in
+ * C when the Logs level is below debug. */
+CAMLprim value caml_ds4_set_log_min_level(value v_level) {
+    CAMLparam1(v_level);
+    g_log_min = Int_val(v_level);
+    CAMLreturn(Val_unit);
+}
 
 #define Engine_val(v) (*((ds4_engine **)Data_custom_val(v)))
 
@@ -85,9 +202,9 @@ CAMLprim value caml_ds4_engine_open(value v_backend, value v_model) {
     opt.mtp_margin = 3.0f;
 
     ds4_engine *engine = NULL;
-    caml_release_runtime_system();
+    DS4_ENTER_BLOCKING();
     int rc = ds4_engine_open(&engine, &opt);
-    caml_acquire_runtime_system();
+    DS4_LEAVE_BLOCKING();
 
     caml_stat_free(model_path);
     if (rc != 0 || engine == NULL)
@@ -171,9 +288,9 @@ CAMLprim value caml_ds4_session_create(value v_engine, value v_ctx,
     ds4_engine *e = Engine_val(v_engine);
     int ctx = Int_val(v_ctx);
 
-    caml_release_runtime_system();
+    DS4_ENTER_BLOCKING();
     int rc = ds4_session_create(&s, e, ctx);
-    caml_acquire_runtime_system();
+    DS4_LEAVE_BLOCKING();
 
     if (rc != 0 || s == NULL)
         caml_failwith("ds4_session_create failed");
@@ -204,9 +321,9 @@ CAMLprim value caml_ds4_session_sync(value v_session, value v_tokens) {
         ds4_tokens_push(&prompt, Int_val(Field(v_tokens, i)));
 
     char err[256] = {0};
-    caml_release_runtime_system();
+    DS4_ENTER_BLOCKING();
     int rc = ds4_session_sync(box->s, &prompt, err, sizeof(err));
-    caml_acquire_runtime_system();
+    DS4_LEAVE_BLOCKING();
 
     ds4_tokens_free(&prompt);
     if (rc != 0)
@@ -243,9 +360,9 @@ CAMLprim value caml_ds4_session_eval(value v_session, value v_token) {
     int token = Int_val(v_token);
 
     char err[256] = {0};
-    caml_release_runtime_system();
+    DS4_ENTER_BLOCKING();
     int rc = ds4_session_eval(box->s, token, err, sizeof(err));
-    caml_acquire_runtime_system();
+    DS4_LEAVE_BLOCKING();
 
     if (rc != 0)
         caml_failwith(err[0] ? err : "ds4_session_eval failed");

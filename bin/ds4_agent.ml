@@ -88,6 +88,17 @@ let main model_opt workspace system think =
 
 open Cmdliner
 
+let log =
+  let setup style_renderer level =
+    Fmt_tty.setup_std_outputs ?style_renderer ();
+    Logs.set_level level;
+    Logs.set_reporter (Logs_fmt.reporter ());
+    Logs_threaded.enable ();
+    V4.forward_logs ()
+  in
+  Term.(const setup $ Fmt_cli.style_renderer () $ Logs_cli.level ())
+
+let with_log t = Term.(const (fun () v -> v) $ log $ t)
 let model = Deepseek_cmd.Model.arg
 
 let workspace =
@@ -109,7 +120,7 @@ let think =
     & info [ "think" ] ~docv:"MODE" ~doc:"Reply mode: chat or thinking.")
 
 let () =
-  let term = Term.(const main $ model $ workspace $ system $ think) in
+  let term = with_log Term.(const main $ model $ workspace $ system $ think) in
   let info =
     Cmd.info "ds4-agent" ~version:"0.1"
       ~doc:"Interactive tool-using agent over DeepSeek V4 (Metal)."

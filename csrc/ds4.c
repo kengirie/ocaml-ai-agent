@@ -594,7 +594,9 @@ typedef struct {
 } ds4_cursor;
 
 static void ds4_die(const char *msg) {
-    fprintf(stderr, "ds4: %s\n", msg);
+    /* Fatal: route at ERROR level (not ds4_diag's debug-level DEFAULT) so the
+     * cause stays visible even when engine diagnostics are otherwise gated. */
+    ds4_log(stderr, DS4_LOG_ERROR, "ds4: %s\n", msg);
     exit(1);
 }
 
@@ -622,7 +624,8 @@ static uint32_t ds4_expected_layer_compress_ratio(uint32_t il) {
 }
 
 static void ds4_die_errno(const char *what, const char *path) {
-    fprintf(stderr, "ds4: %s '%s': %s\n", what, path, strerror(errno));
+    /* Fatal: ERROR level so it survives default verbosity gating (see ds4_die). */
+    ds4_log(stderr, DS4_LOG_ERROR, "ds4: %s '%s': %s\n", what, path, strerror(errno));
     exit(1);
 }
 
@@ -660,7 +663,7 @@ static void ds4_alloc_guard_end(void) {
 
 static void ds4_alloc_guard_check(const char *op, size_t size) {
     if (!g_alloc_guard_enabled) return;
-    fprintf(stderr,
+    ds4_diag(
             "ds4: internal allocation during %s: %s(%zu). "
             "CPU decode is expected to reuse preallocated scratch buffers.\n",
             g_alloc_guard_phase ? g_alloc_guard_phase : "guarded phase",
@@ -854,7 +857,7 @@ static void ds4_expert_profile_init(const char *path, const char *hotlist_path) 
         if (cap == 0 || cap > DS4_N_EXPERT) continue;
         g_expert_profile.caps[g_expert_profile.n_caps++] = cap;
     }
-    fprintf(stderr,
+    ds4_diag(
             "ds4: Metal expert locality profiler active (profile: %s, hotlist: %s)\n",
             g_expert_profile.path ? g_expert_profile.path : "disabled",
             g_expert_profile.hotlist_path ? g_expert_profile.hotlist_path : "disabled");
@@ -1069,7 +1072,7 @@ static void ds4_expert_profile_write_hotlist_file(ds4_expert_profile *p) {
 
     FILE *fp = fopen(p->hotlist_path, "wb");
     if (!fp) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: failed to open expert hotlist output %s: %s\n",
                 p->hotlist_path,
                 strerror(errno));
@@ -1100,12 +1103,12 @@ static void ds4_expert_profile_write_hotlist_file(ds4_expert_profile *p) {
     free(entries);
 
     if (fclose(fp) != 0) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: failed to close expert hotlist output %s: %s\n",
                 p->hotlist_path,
                 strerror(errno));
     } else {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: wrote Metal expert hotlist to %s "
                 "(%" PRIu64 " layer records, %" PRIu64 " selections)\n",
                 p->hotlist_path,
@@ -1121,7 +1124,7 @@ static void ds4_expert_profile_close(void) {
     if (p->path) {
         FILE *fp = fopen(p->path, "wb");
         if (!fp) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: failed to open expert profile output %s: %s\n",
                     p->path,
                     strerror(errno));
@@ -1158,12 +1161,12 @@ static void ds4_expert_profile_close(void) {
             fputs("  ]\n}\n", fp);
 
             if (fclose(fp) != 0) {
-                fprintf(stderr,
+                ds4_diag(
                         "ds4: failed to close expert profile output %s: %s\n",
                         p->path,
                         strerror(errno));
             } else {
-                fprintf(stderr,
+                ds4_diag(
                         "ds4: wrote Metal expert locality profile to %s "
                         "(%" PRIu64 " layer records, %" PRIu64 " selections)\n",
                         p->path,
@@ -1193,6 +1196,49 @@ static void sleep_sec(double sec) {
     (void)nanosleep(&req, &req);
 }
 
+/* Diagnostic sink.  Set by ds4_set_log_callback(); NULL means "write to stderr"
+ * (the historical behaviour).  ds4_diag and ds4_vlog both funnel through
+ * ds4_emit, so a single callback intercepts every routed diagnostic. */
+static ds4_log_fn g_ds4_log_fn = NULL;
+static void *g_ds4_log_ud = NULL;
+
+void ds4_set_log_callback(ds4_log_fn fn, void *ud) {
+    g_ds4_log_fn = fn;
+    g_ds4_log_ud = ud;
+}
+
+/* Format one message and hand it to the sink (or stderr when none is set).  The
+ * common case fits the stack buffer; longer messages (e.g. logit dumps) grow to
+ * the heap so nothing is truncated. */
+static void ds4_emit(ds4_log_type type, const char *fmt, va_list ap) {
+    char stackbuf[512];
+    va_list ap2;
+    va_copy(ap2, ap);
+    int n = vsnprintf(stackbuf, sizeof(stackbuf), fmt, ap);
+    char *msg = stackbuf;
+    char *heap = NULL;
+    if (n >= (int)sizeof(stackbuf) && n > 0) {
+        heap = (char *)malloc((size_t)n + 1);
+        if (heap) {
+            vsnprintf(heap, (size_t)n + 1, fmt, ap2);
+            msg = heap;
+        }
+    }
+    va_end(ap2);
+    if (g_ds4_log_fn)
+        g_ds4_log_fn(g_ds4_log_ud, type, msg);
+    else
+        fputs(msg, stderr);
+    free(heap);
+}
+
+void ds4_diag(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    ds4_emit(DS4_LOG_DEFAULT, fmt, ap);
+    va_end(ap);
+}
+
 static const char *ds4_log_color_code(ds4_log_type type) {
     switch (type) {
     case DS4_LOG_PREFILL:
@@ -1220,6 +1266,13 @@ bool ds4_log_is_tty(FILE *fp) {
 }
 
 static void ds4_vlog(FILE *fp, ds4_log_type type, const char *fmt, va_list ap) {
+    /* When a sink is installed, route the typed stderr/stdout logs through it
+     * too (uncolourised — the consumer owns colour).  Logs aimed at a real file
+     * still go to that file. */
+    if (g_ds4_log_fn && (fp == stderr || fp == stdout)) {
+        ds4_emit(type, fmt, ap);
+        return;
+    }
     const bool colorize = type != DS4_LOG_DEFAULT && ds4_log_is_tty(fp);
     if (colorize) fputs(ds4_log_color_code(type), fp);
     vfprintf(fp, fmt, ap);
@@ -1236,13 +1289,13 @@ void ds4_log(FILE *fp, ds4_log_type type, const char *fmt, ...) {
 static bool write_f32_binary_file(const char *path, const float *data, uint64_t n) {
     FILE *fp = fopen(path, "wb");
     if (!fp) {
-        fprintf(stderr, "ds4: failed to open %s for writing: %s\n", path, strerror(errno));
+        ds4_diag( "ds4: failed to open %s for writing: %s\n", path, strerror(errno));
         return false;
     }
     const size_t nw = fwrite(data, sizeof(float), (size_t)n, fp);
     const bool ok = nw == (size_t)n && fclose(fp) == 0;
     if (!ok) {
-        fprintf(stderr, "ds4: failed to write %s\n", path);
+        ds4_diag( "ds4: failed to write %s\n", path);
         return false;
     }
     return true;
@@ -1251,11 +1304,11 @@ static bool write_f32_binary_file(const char *path, const float *data, uint64_t 
 static bool read_f32_binary_file(const char *path, float *data, uint64_t n) {
     struct stat st;
     if (stat(path, &st) != 0) {
-        fprintf(stderr, "ds4: failed to stat %s: %s\n", path, strerror(errno));
+        ds4_diag( "ds4: failed to stat %s: %s\n", path, strerror(errno));
         return false;
     }
     if (st.st_size < 0 || (uint64_t)st.st_size != n * sizeof(float)) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: %s has size %llu bytes, expected %llu bytes\n",
                 path,
                 (unsigned long long)st.st_size,
@@ -1265,13 +1318,13 @@ static bool read_f32_binary_file(const char *path, float *data, uint64_t n) {
 
     FILE *fp = fopen(path, "rb");
     if (!fp) {
-        fprintf(stderr, "ds4: failed to open %s for reading: %s\n", path, strerror(errno));
+        ds4_diag( "ds4: failed to open %s for reading: %s\n", path, strerror(errno));
         return false;
     }
     const size_t nr = fread(data, sizeof(float), (size_t)n, fp);
     const bool ok = nr == (size_t)n && fclose(fp) == 0;
     if (!ok) {
-        fprintf(stderr, "ds4: failed to read %s\n", path);
+        ds4_diag( "ds4: failed to read %s\n", path);
         return false;
     }
     return true;
@@ -2177,7 +2230,7 @@ static bool accelerator_prepare_model_tensor_spans(const ds4_model *m,
     const char *accelerator_name = "CUDA";
 #endif
 
-    fprintf(stderr, "%sds4: %s preparing model tensor mappings%s",
+    ds4_diag( "%sds4: %s preparing model tensor mappings%s",
             tty ? "\r\033[K" : "",
             accelerator_name,
             tty ? ": 0.00 GiB" : "\n");
@@ -2197,7 +2250,7 @@ static bool accelerator_prepare_model_tensor_spans(const ds4_model *m,
         snprintf(label, sizeof(label), "tensor-span:%" PRIu64, merged);
         if (ds4_gpu_cache_model_range(m->map, m->size, off, end - off, label) == 0) {
             if (tty) fputc('\n', stderr);
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: accelerator failed to prepare model tensor span %" PRIu64
                     " at offset %" PRIu64 "\n",
                     merged, off);
@@ -2210,11 +2263,11 @@ static bool accelerator_prepare_model_tensor_spans(const ds4_model *m,
         const double now = now_sec();
         if (prepared >= next_progress || now - last_progress >= (tty ? 2.0 : 10.0)) {
             if (tty) {
-                fprintf(stderr, "\r\033[Kds4: %s preparing model tensor mappings: %.2f GiB",
+                ds4_diag( "\r\033[Kds4: %s preparing model tensor mappings: %.2f GiB",
                         accelerator_name,
                         (double)prepared / 1073741824.0);
             } else {
-                fprintf(stderr, "ds4: %s prepared model tensor mappings %.2f GiB\n",
+                ds4_diag( "ds4: %s prepared model tensor mappings %.2f GiB\n",
                         accelerator_name,
                         (double)prepared / 1073741824.0);
             }
@@ -2246,7 +2299,7 @@ static bool accelerator_cache_q8_tensors(const ds4_model *m,
         snprintf(label, sizeof(label), "tensor:%.*s", (int)t->name.len, t->name.ptr);
         if (t->type == DS4_TENSOR_Q8_0 && t->ndim == 2 &&
             ds4_gpu_cache_q8_f16_range(m->map, m->size, t->abs_offset, t->bytes, t->dim[0], t->dim[1], label) == 0) {
-            fprintf(stderr, "ds4: accelerator failed to cache dequantized Q8 tensor %.*s\n",
+            ds4_diag( "ds4: accelerator failed to cache dequantized Q8 tensor %.*s\n",
                     (int)t->name.len, t->name.ptr);
             return false;
         }
@@ -2279,7 +2332,7 @@ static bool accelerator_cache_model_tensors(ds4_backend backend,
 #else
     const char *accelerator_name = "CUDA";
 #endif
-    fprintf(stderr,
+    ds4_diag(
             "ds4: %s startup model preparation covered %.2f GiB of tensor spans in %.3fs\n",
             accelerator_name, (double)prepared / 1073741824.0, t1 - t0);
     return true;
@@ -2316,7 +2369,7 @@ static void model_warm_weights(const ds4_model *m) {
     volatile uint64_t checksum = 0;
     const double t0 = now_sec();
 
-    fprintf(stderr, "ds4: warming mapped tensor pages: %.2f GiB\n",
+    ds4_diag( "ds4: warming mapped tensor pages: %.2f GiB\n",
             (double)(end - start) / (1024.0 * 1024.0 * 1024.0));
 
 #if defined(POSIX_MADV_WILLNEED)
@@ -2329,7 +2382,7 @@ static void model_warm_weights(const ds4_model *m) {
     checksum += p[end - 1];
 
     const double t1 = now_sec();
-    fprintf(stderr, "ds4: warmed tensor pages in %.3fs (checksum=%llu)\n",
+    ds4_diag( "ds4: warmed tensor pages in %.3fs (checksum=%llu)\n",
             t1 - t0, (unsigned long long)checksum);
 }
 
@@ -3064,7 +3117,7 @@ typedef struct {
 static uint32_t required_u32(const ds4_model *m, const char *key) {
     uint32_t v = 0;
     if (!model_get_u32(m, key, &v)) {
-        fprintf(stderr, "ds4: required metadata key is missing: %s\n", key);
+        ds4_diag( "ds4: required metadata key is missing: %s\n", key);
         exit(1);
     }
     return v;
@@ -3073,7 +3126,7 @@ static uint32_t required_u32(const ds4_model *m, const char *key) {
 static float required_f32(const ds4_model *m, const char *key) {
     float v = 0.0f;
     if (!model_get_f32_compat(m, key, &v)) {
-        fprintf(stderr, "ds4: required metadata key is missing: %s\n", key);
+        ds4_diag( "ds4: required metadata key is missing: %s\n", key);
         exit(1);
     }
     return v;
@@ -3082,7 +3135,7 @@ static float required_f32(const ds4_model *m, const char *key) {
 static bool required_bool(const ds4_model *m, const char *key) {
     bool v = false;
     if (!model_get_bool(m, key, &v)) {
-        fprintf(stderr, "ds4: required metadata key is missing: %s\n", key);
+        ds4_diag( "ds4: required metadata key is missing: %s\n", key);
         exit(1);
     }
     return v;
@@ -3091,7 +3144,7 @@ static bool required_bool(const ds4_model *m, const char *key) {
 static ds4_tensor *required_tensor(const ds4_model *m, const char *name) {
     ds4_tensor *t = model_find_tensor(m, name);
     if (!t) {
-        fprintf(stderr, "ds4: required tensor is missing: %s\n", name);
+        ds4_diag( "ds4: required tensor is missing: %s\n", name);
         exit(1);
     }
     return t;
@@ -3120,7 +3173,7 @@ static void tensor_expect_layout(
         uint64_t          d2) {
     if (!t) ds4_die("internal error: missing tensor while validating layout");
     if (t->type != type) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: tensor %.*s has type %s, expected %s\n",
                 (int)t->name.len,
                 t->name.ptr,
@@ -3129,7 +3182,7 @@ static void tensor_expect_layout(
         exit(1);
     }
     if (t->ndim != ndim) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: tensor %.*s has %u dimensions, expected %u\n",
                 (int)t->name.len,
                 t->name.ptr,
@@ -3141,7 +3194,7 @@ static void tensor_expect_layout(
     const uint64_t want[3] = { d0, d1, d2 };
     for (uint32_t i = 0; i < ndim; i++) {
         if (t->dim[i] == want[i]) continue;
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: tensor %.*s has dim[%u]=%" PRIu64 ", expected %" PRIu64 "\n",
                 (int)t->name.len,
                 t->name.ptr,
@@ -3170,7 +3223,7 @@ static void tensor_expect_plain_layout(
         uint64_t          d2) {
     if (!t) ds4_die("internal error: missing tensor while validating layout");
     if (t->type != DS4_TENSOR_F16 && t->type != DS4_TENSOR_F32) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: tensor %.*s has type %s, expected F16 or F32\n",
                 (int)t->name.len,
                 t->name.ptr,
@@ -3192,7 +3245,7 @@ static void tensor_expect_f16_or_q8_0_layout(
         uint64_t          d2) {
     if (!t) ds4_die("internal error: missing tensor while validating layout");
     if (!tensor_type_is_f16_or_q8_0(t->type)) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: tensor %.*s has type %s, expected f16 or q8_0\n",
                 (int)t->name.len,
                 t->name.ptr,
@@ -3314,7 +3367,7 @@ static void tensor_expect_routed_expert(
         uint64_t          d2) {
     if (!t) ds4_die("internal error: missing routed expert tensor while validating layout");
     if (!tensor_is_routed_expert_type(t->type)) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: tensor %.*s has type %u (%s), expected a routed expert quant type\n",
                 (int)t->name.len,
                 t->name.ptr,
@@ -3323,7 +3376,7 @@ static void tensor_expect_routed_expert(
         exit(1);
     }
     if (t->ndim != ndim) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: tensor %.*s has %u dimensions, expected %u\n",
                 (int)t->name.len,
                 t->name.ptr,
@@ -3335,7 +3388,7 @@ static void tensor_expect_routed_expert(
     const uint64_t want[3] = { d0, d1, d2 };
     for (uint32_t i = 0; i < ndim; i++) {
         if (t->dim[i] == want[i]) continue;
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: tensor %.*s has dim[%u]=%" PRIu64 ", expected %" PRIu64 "\n",
                 (int)t->name.len,
                 t->name.ptr,
@@ -3475,7 +3528,7 @@ static void weights_validate_layout(
         const ds4_layer_weights *l = &w->layer[il];
         const uint32_t ratio = ds4_layer_compress_ratio(il);
         if (!weights_layer_has_required(l, il)) {
-            fprintf(stderr, "ds4: required tensors for layer %u are missing\n", il);
+            ds4_diag( "ds4: required tensors for layer %u are missing\n", il);
             exit(1);
         }
 
@@ -3521,7 +3574,7 @@ static void weights_validate_layout(
         tensor_expect_routed_expert(l->ffn_up_exps,   3, DS4_N_EMBD, DS4_N_FF_EXP, DS4_N_EXPERT);
         tensor_expect_routed_expert(l->ffn_down_exps, 3, DS4_N_FF_EXP, DS4_N_EMBD, DS4_N_EXPERT);
         if (l->ffn_gate_exps->type != l->ffn_up_exps->type) {
-            fprintf(stderr, "ds4: routed gate/up experts use different quant types in layer %u\n", il);
+            ds4_diag( "ds4: routed gate/up experts use different quant types in layer %u\n", il);
             exit(1);
         }
         tensor_expect_layout(l->ffn_gate_shexp, DS4_TENSOR_Q8_0,    2, DS4_N_EMBD, DS4_N_FF_EXP, 0);
@@ -3673,7 +3726,7 @@ static void ds4_select_shape_from_metadata(
         return;
     }
 
-    fprintf(stderr,
+    ds4_diag(
             "ds4: unsupported DeepSeek4 shape: layers=%u embd=%u heads=%u "
             "q_lora=%u out_groups=%u experts=%u ff_exp=%u indexer_top_k=%u\n",
             n_layer,
@@ -3692,7 +3745,7 @@ static void validate_compress_ratio_metadata(const ds4_model *m) {
     ds4_array_ref arr;
     if (!model_get_array(m, key, &arr) ||
         (arr.type != GGUF_VALUE_UINT32 && arr.type != GGUF_VALUE_INT32)) {
-        fprintf(stderr, "ds4: required int32/uint32 array metadata key is missing: %s\n", key);
+        ds4_diag( "ds4: required int32/uint32 array metadata key is missing: %s\n", key);
         exit(1);
     }
     if (arr.len < DS4_N_LAYER) {
@@ -3714,7 +3767,7 @@ static void validate_compress_ratio_metadata(const ds4_model *m) {
 
         const uint32_t expected = ds4_expected_layer_compress_ratio(il);
         if (got != expected) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: unexpected DeepSeek4 compression ratio at layer %u for %s: got %u, expected %u\n",
                     il, DS4_MODEL_SHAPE_NAME, got, expected);
             exit(1);
@@ -3730,7 +3783,7 @@ static void validate_swiglu_clamp_metadata(const ds4_model *m) {
     ds4_array_ref arr;
     if (!model_get_array(m, key, &arr) ||
         (arr.type != GGUF_VALUE_FLOAT32 && arr.type != GGUF_VALUE_FLOAT64)) {
-        fprintf(stderr, "ds4: required float array metadata key is missing: %s\n", key);
+        ds4_diag( "ds4: required float array metadata key is missing: %s\n", key);
         exit(1);
     }
     if (arr.len < DS4_N_LAYER) {
@@ -3753,7 +3806,7 @@ static void validate_swiglu_clamp_metadata(const ds4_model *m) {
 
 static void config_expect_u32(const char *name, uint32_t got, uint32_t expected) {
     if (got == expected) return;
-    fprintf(stderr, "ds4: expected %s=%u for %s, got %u\n",
+    ds4_diag( "ds4: expected %s=%u for %s, got %u\n",
             name, expected, DS4_MODEL_SHAPE_NAME, got);
     exit(1);
 }
@@ -3761,14 +3814,14 @@ static void config_expect_u32(const char *name, uint32_t got, uint32_t expected)
 static void config_expect_f32(const char *name, float got, float expected) {
     const float scale = fabsf(expected) > 1.0f ? fabsf(expected) : 1.0f;
     if (fabsf(got - expected) <= scale * 1.0e-6f) return;
-    fprintf(stderr, "ds4: expected %s=%.9g for %s, got %.9g\n",
+    ds4_diag( "ds4: expected %s=%.9g for %s, got %.9g\n",
             name, (double)expected, DS4_MODEL_SHAPE_NAME, (double)got);
     exit(1);
 }
 
 static void config_expect_bool(const char *name, bool got, bool expected) {
     if (got == expected) return;
-    fprintf(stderr, "ds4: expected %s=%s for %s, got %s\n",
+    ds4_diag( "ds4: expected %s=%s for %s, got %s\n",
             name, expected ? "true" : "false", DS4_MODEL_SHAPE_NAME, got ? "true" : "false");
     exit(1);
 }
@@ -3863,7 +3916,7 @@ static void config_validate_model(const ds4_model *m) {
     uint64_t rope_orig_ctx = DS4_ROPE_ORIG_CTX;
     model_get_u64_compat(m, "deepseek4.rope.scaling.original_context_length", &rope_orig_ctx);
     if (rope_orig_ctx != DS4_ROPE_ORIG_CTX) {
-        fprintf(stderr, "ds4: expected rope.scaling.original_context_length=%" PRIu64
+        ds4_diag( "ds4: expected rope.scaling.original_context_length=%" PRIu64
                 " for %s, got %" PRIu64 "\n",
                 (uint64_t)DS4_ROPE_ORIG_CTX, DS4_MODEL_SHAPE_NAME, rope_orig_ctx);
         exit(1);
@@ -7760,7 +7813,7 @@ static void layer_ffn_one(
     }
 
     if (profile) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: decode detail layer %u ffn hc=%.3f norm=%.3f routed=%.3f shared=%.3f post=%.3f total=%.3f ms\n",
                 il,
                 t_hc * 1000.0,
@@ -7841,7 +7894,7 @@ static void layer_ffn_one_decode_scratch(
     if (profile) t_post = now_sec() - t0;
 
     if (profile) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: decode detail layer %u ffn hc=%.3f norm=%.3f routed=%.3f shared=%.3f post=%.3f total=%.3f ms\n",
                 il,
                 t_hc * 1000.0,
@@ -8086,7 +8139,7 @@ static void layer_ffn_shared_batch(
     if (profile) t_post = now_sec() - t0;
 
     if (profile) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: prefill detail layer %u ffn hc_norm=%.3f routed=%.3f shared=%.3f post=%.3f total=%.3f\n",
                 il, t_hc_norm, t_routed, t_shared, t_post, now_sec() - t_start);
     }
@@ -9521,11 +9574,11 @@ static void layer_attention_raw_swa_batch(
     if (profile) t_out = now_sec() - t0;
 
     if (profile) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: prefill detail layer %u attn hc_norm=%.3f q=%.3f kv=%.3f token_loop=%.3f out=%.3f total=%.3f\n",
                 il, t_hc_norm, t_q, t_kv, t_token_loop, t_out, now_sec() - t_start);
         if (getenv("DS4_PREFILL_PROFILE_TOKEN") != NULL) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: prefill token detail layer %u rope_cache=%.3f compress=%.3f indexer=%.3f attn_rows=%.3f inv_rope=%.3f\n",
                     il, t_tl_rope_cache, t_tl_compress, t_tl_indexer, t_tl_attn_rows, t_tl_inv_rope);
         }
@@ -9700,7 +9753,7 @@ static void layer_forward_raw_swa_one(
     if (profile) t_ffn = now_sec() - t0;
 
     if (profile) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: decode detail layer %u attn hc=%.3f q=%.3f kv=%.3f rope=%.3f compress=%.3f indexer=%.3f attn_rows=%.3f inv_rope=%.3f out=%.3f post=%.3f ffn=%.3f total=%.3f ms\n",
                 il,
                 t_hc * 1000.0,
@@ -9824,7 +9877,7 @@ static void prefill_layer_major_cpu(
     free(plain);
 
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
-        fprintf(stderr, "ds4: prefill layer %u/%u\r", il + 1, (uint32_t)DS4_N_LAYER);
+        ds4_diag( "ds4: prefill layer %u/%u\r", il + 1, (uint32_t)DS4_N_LAYER);
         fflush(stderr);
 
         if (batched_attn) {
@@ -10572,7 +10625,7 @@ static bool metal_graph_load_directional_steering(
     if (attn_scale == 0.0f && ffn_scale == 0.0f) return true;
 
     if (!path || !path[0]) {
-        fprintf(stderr, "ds4: directional steering needs --dir-steering-file\n");
+        ds4_diag( "ds4: directional steering needs --dir-steering-file\n");
         return false;
     }
 
@@ -10587,12 +10640,12 @@ static bool metal_graph_load_directional_steering(
     free(dirs);
 
     if (!ok) {
-        fprintf(stderr, "ds4: failed to load directional steering vectors from %s\n", path);
+        ds4_diag( "ds4: failed to load directional steering vectors from %s\n", path);
         return false;
     }
     g->directional_steering_attn_scale = attn_scale;
     g->directional_steering_ffn_scale = ffn_scale;
-    fprintf(stderr, "ds4: directional steering enabled: %s attn=%g ffn=%g\n",
+    ds4_diag( "ds4: directional steering enabled: %s attn=%g ffn=%g\n",
             path, (double)attn_scale, (double)ffn_scale);
     return true;
 }
@@ -10720,7 +10773,7 @@ static void metal_graph_debug_dump_tensor(
     if (!t || n_f32 == 0 || !metal_graph_debug_wants(name, il, pos)) return;
 
     if (ds4_gpu_synchronize() == 0) {
-        fprintf(stderr, "ds4: failed to synchronize before dumping %s layer %u pos %u\n", name, il, pos);
+        ds4_diag( "ds4: failed to synchronize before dumping %s layer %u pos %u\n", name, il, pos);
         return;
     }
 
@@ -10729,13 +10782,13 @@ static void metal_graph_debug_dump_tensor(
         char path[1024];
         snprintf(path, sizeof(path), "%s_%s-%u_pos%u.bin", prefix, name, il, pos);
         if (write_f32_binary_file(path, buf, n_f32)) {
-            fprintf(stderr, "ds4: dumped %s layer %u pos %u to %s\n", name, il, pos, path);
+            ds4_diag( "ds4: dumped %s layer %u pos %u to %s\n", name, il, pos, path);
         }
     }
     free(buf);
 
     if (ds4_gpu_begin_commands() == 0) {
-        fprintf(stderr, "ds4: failed to resume Metal command batch after dumping %s layer %u pos %u\n", name, il, pos);
+        ds4_diag( "ds4: failed to resume Metal command batch after dumping %s layer %u pos %u\n", name, il, pos);
     }
 }
 
@@ -10749,7 +10802,7 @@ static void metal_graph_debug_dump_f16_tensor(
     if (!t || n_f16 == 0 || !metal_graph_debug_wants(name, il, pos)) return;
 
     if (ds4_gpu_synchronize() == 0) {
-        fprintf(stderr, "ds4: failed to synchronize before dumping %s layer %u pos %u\n", name, il, pos);
+        ds4_diag( "ds4: failed to synchronize before dumping %s layer %u pos %u\n", name, il, pos);
         return;
     }
 
@@ -10760,14 +10813,14 @@ static void metal_graph_debug_dump_f16_tensor(
         char path[1024];
         snprintf(path, sizeof(path), "%s_%s-%u_pos%u.bin", prefix, name, il, pos);
         if (write_f32_binary_file(path, fbuf, n_f16)) {
-            fprintf(stderr, "ds4: dumped %s layer %u pos %u to %s\n", name, il, pos, path);
+            ds4_diag( "ds4: dumped %s layer %u pos %u to %s\n", name, il, pos, path);
         }
     }
     free(fbuf);
     free(hbuf);
 
     if (ds4_gpu_begin_commands() == 0) {
-        fprintf(stderr, "ds4: failed to resume Metal command batch after dumping %s layer %u pos %u\n", name, il, pos);
+        ds4_diag( "ds4: failed to resume Metal command batch after dumping %s layer %u pos %u\n", name, il, pos);
     }
 }
 
@@ -10781,7 +10834,7 @@ static void metal_graph_debug_dump_i32_tensor(
     if (!t || n_i32 == 0 || !metal_graph_debug_wants(name, il, pos)) return;
 
     if (ds4_gpu_synchronize() == 0) {
-        fprintf(stderr, "ds4: failed to synchronize before dumping %s layer %u pos %u\n", name, il, pos);
+        ds4_diag( "ds4: failed to synchronize before dumping %s layer %u pos %u\n", name, il, pos);
         return;
     }
 
@@ -10792,7 +10845,7 @@ static void metal_graph_debug_dump_i32_tensor(
         FILE *fp = fopen(path, "wb");
         if (fp) {
             if (fwrite(buf, sizeof(buf[0]), (size_t)n_i32, fp) == (size_t)n_i32) {
-                fprintf(stderr, "ds4: dumped %s layer %u pos %u to %s\n", name, il, pos, path);
+                ds4_diag( "ds4: dumped %s layer %u pos %u to %s\n", name, il, pos, path);
             }
             fclose(fp);
         }
@@ -10800,7 +10853,7 @@ static void metal_graph_debug_dump_i32_tensor(
     free(buf);
 
     if (ds4_gpu_begin_commands() == 0) {
-        fprintf(stderr, "ds4: failed to resume Metal command batch after dumping %s layer %u pos %u\n", name, il, pos);
+        ds4_diag( "ds4: failed to resume Metal command batch after dumping %s layer %u pos %u\n", name, il, pos);
     }
 }
 
@@ -10902,7 +10955,7 @@ static bool metal_graph_alloc_raw_cap(
          * behavior.  It can be slower, but it keeps oversized contexts from
          * turning memory pressure into a machine-wide lockup.
          */
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: CUDA using managed KV cache for ctx=%u "
                 "(kv cache %.2f GiB, context buffers %.2f GiB); "
                 "this may degrade performance but is needed for very large contexts\n",
@@ -11191,7 +11244,7 @@ static bool metal_graph_install_model_spans(
                                                 spans->len,
                                                 spans->max_tensor_bytes) != 0;
     if (!ok) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal SSD streaming failed to map %s model spans\n",
                 label ? label : "requested");
     }
@@ -11559,7 +11612,7 @@ static bool metal_graph_stream_prefill_selected_profile_layer(
     for (uint64_t i = 0; i < n_ids; i++) {
         const int32_t expert = selected[i];
         if (expert < 0 || (uint32_t)expert >= DS4_N_EXPERT) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: Metal streaming prefill selected profile expert id %d is outside 0..%u at layer %u\n",
                     expert,
                     (uint32_t)DS4_N_EXPERT,
@@ -11578,14 +11631,14 @@ static bool metal_graph_stream_prefill_selected_profile_layer(
     const uint64_t down_row_bytes = routed_expert_row_bytes(layer->ffn_down_exps);
     if (layer->ffn_gate_exps->dim[1] > UINT64_MAX / gate_row_bytes ||
         layer->ffn_down_exps->dim[1] > UINT64_MAX / down_row_bytes) {
-        fprintf(stderr, "ds4: Metal streaming prefill selected profile byte size overflow at layer %u\n", il);
+        ds4_diag( "ds4: Metal streaming prefill selected profile byte size overflow at layer %u\n", il);
         return false;
     }
     const uint64_t gate_expert_bytes = layer->ffn_gate_exps->dim[1] * gate_row_bytes;
     const uint64_t down_expert_bytes = layer->ffn_down_exps->dim[1] * down_row_bytes;
     if (gate_expert_bytes > UINT64_MAX - gate_expert_bytes ||
         gate_expert_bytes + gate_expert_bytes > UINT64_MAX - down_expert_bytes) {
-        fprintf(stderr, "ds4: Metal streaming prefill selected profile byte size overflow at layer %u\n", il);
+        ds4_diag( "ds4: Metal streaming prefill selected profile byte size overflow at layer %u\n", il);
         return false;
     }
     const uint64_t per_expert_bytes = gate_expert_bytes + gate_expert_bytes +
@@ -11623,7 +11676,7 @@ static bool metal_graph_stream_prefill_selected_profile_layer(
         g->prefill_selected_profile_max_unique = unique;
     }
 
-    fprintf(stderr,
+    ds4_diag(
             "ds4: Metal streaming prefill selected profile layer=%u "
             "tokens=%u unique=%u/%u selected=%.2f GiB full=%.2f GiB ratio=%.3f\n",
             il,
@@ -11647,7 +11700,7 @@ static void metal_graph_stream_prefill_selected_profile_summary(
     const double ratio = g->prefill_selected_profile_full_bytes == 0 ? 0.0 :
         (double)g->prefill_selected_profile_selected_bytes /
         (double)g->prefill_selected_profile_full_bytes;
-    fprintf(stderr,
+    ds4_diag(
             "ds4: Metal streaming prefill selected profile summary "
             "layers=%u avg_unique=%.1f min_unique=%u max_unique=%u "
             "selected=%.2f GiB full=%.2f GiB ratio=%.3f rows=%" PRIu64 "\n",
@@ -11946,7 +11999,7 @@ static bool metal_graph_stream_prefill_selected_pagein_start(
         for (uint64_t i = 0; i < n_ids; i++) {
             const int32_t expert = selected[i];
             if (expert < 0 || (uint32_t)expert >= DS4_N_EXPERT) {
-                fprintf(stderr,
+                ds4_diag(
                         "ds4: Metal streaming prefill selected page-in expert id %d is outside 0..%u at layer %u\n",
                         expert,
                         (uint32_t)DS4_N_EXPERT,
@@ -11993,7 +12046,7 @@ static bool metal_graph_stream_prefill_selected_pagein_start(
                 first_id > UINT64_MAX / down_expert_bytes ||
                 n_experts > UINT64_MAX / gate_expert_bytes ||
                 n_experts > UINT64_MAX / down_expert_bytes) {
-                fprintf(stderr, "ds4: Metal streaming prefill selected page-in offset overflow\n");
+                ds4_diag( "ds4: Metal streaming prefill selected page-in offset overflow\n");
                 ok = false;
                 break;
             }
@@ -12004,7 +12057,7 @@ static bool metal_graph_stream_prefill_selected_pagein_start(
             if (gate_rel > UINT64_MAX - layer->ffn_gate_exps->abs_offset ||
                 gate_rel > UINT64_MAX - layer->ffn_up_exps->abs_offset ||
                 down_rel > UINT64_MAX - layer->ffn_down_exps->abs_offset) {
-                fprintf(stderr, "ds4: Metal streaming prefill selected page-in offset overflow\n");
+                ds4_diag( "ds4: Metal streaming prefill selected page-in offset overflow\n");
                 ok = false;
                 break;
             }
@@ -12048,7 +12101,7 @@ static bool metal_graph_stream_prefill_selected_pagein_start(
                                       metal_graph_stream_pagein_thread_main,
                                       job);
         if (rc != 0) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: Metal streaming prefill selected page-in thread failed: %s\n",
                     strerror(rc));
             free(ranges);
@@ -12067,7 +12120,7 @@ static bool metal_graph_stream_prefill_selected_pagein_start(
                                           metal_graph_stream_pagein_worker_main,
                                           &job->workers[t]);
             if (rc != 0) {
-                fprintf(stderr,
+                ds4_diag(
                         "ds4: Metal streaming prefill selected page-in worker failed: %s\n",
                         strerror(rc));
                 for (uint32_t j = 0; j < t; j++) {
@@ -12117,7 +12170,7 @@ static bool metal_graph_stream_prefill_selected_pagein_join(
     if (job->profile) {
         const char *kind = job->madvise_only ? "madvise" : "page-in";
         const char *bytes_label = job->madvise_only ? "advised" : "touched";
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal streaming prefill selected %s layer=%u "
                 "tokens=%u unique=%u ranges=%u bytes=%.2f GiB "
                 "read=%.3f ms wait=%.3f ms thread=%.3f ms %s=%.2f GiB ok=%d\n",
@@ -12135,7 +12188,7 @@ static bool metal_graph_stream_prefill_selected_pagein_join(
                 ok ? 1 : 0);
     }
     if (rc != 0) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal streaming prefill selected page-in join failed: %s\n",
                 strerror(rc));
     }
@@ -12228,7 +12281,7 @@ static bool metal_graph_stream_prefill_layer_pagein_start(
                                       metal_graph_stream_pagein_thread_main,
                                       job);
         if (rc != 0) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: Metal streaming prefill layer page-in thread failed: %s\n",
                     strerror(rc));
             free(ranges);
@@ -12247,7 +12300,7 @@ static bool metal_graph_stream_prefill_layer_pagein_start(
                                           metal_graph_stream_pagein_worker_main,
                                           &job->workers[t]);
             if (rc != 0) {
-                fprintf(stderr,
+                ds4_diag(
                         "ds4: Metal streaming prefill layer page-in worker failed: %s\n",
                         strerror(rc));
                 for (uint32_t j = 0; j < t; j++) {
@@ -12301,7 +12354,7 @@ static bool metal_graph_stream_prefill_layer_pagein_join(
         const char *bytes_label = job->pread_only ? "read" :
                                   job->readahead_only ? "requested" :
                                   job->madvise_only ? "advised" : "touched";
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal streaming prefill layer %s layer=%u "
                 "tokens=%u threads=%u ranges=%u bytes=%.2f GiB wait=%.3f ms "
                 "thread=%.3f ms %s=%.2f GiB ok=%d\n",
@@ -12318,7 +12371,7 @@ static bool metal_graph_stream_prefill_layer_pagein_join(
                 ok ? 1 : 0);
     }
     if (rc != 0) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal streaming prefill layer page-in join failed: %s\n",
                 strerror(rc));
     }
@@ -12373,7 +12426,7 @@ static bool metal_graph_stream_prepare_start_if_needed(
     metal_graph_stream_prepare_slot *slot =
         metal_graph_stream_prepare_slot_free(slots, n_slots);
     if (!slot) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal streaming prefill prepare queue is full before layer %u\n",
                 layer);
         return false;
@@ -12519,7 +12572,7 @@ static bool metal_graph_stream_readahead_selected_run(
         first_id > UINT64_MAX / down_expert_bytes ||
         n_experts > UINT64_MAX / gate_expert_bytes ||
         n_experts > UINT64_MAX / down_expert_bytes) {
-        fprintf(stderr, "ds4: Metal streaming prefill selected expert readahead overflow\n");
+        ds4_diag( "ds4: Metal streaming prefill selected expert readahead overflow\n");
         return false;
     }
 
@@ -12530,7 +12583,7 @@ static bool metal_graph_stream_readahead_selected_run(
     if (gate_rel > UINT64_MAX - layer->ffn_gate_exps->abs_offset ||
         gate_rel > UINT64_MAX - layer->ffn_up_exps->abs_offset ||
         down_rel > UINT64_MAX - layer->ffn_down_exps->abs_offset) {
-        fprintf(stderr, "ds4: Metal streaming prefill selected expert readahead overflow\n");
+        ds4_diag( "ds4: Metal streaming prefill selected expert readahead overflow\n");
         return false;
     }
 
@@ -12594,7 +12647,7 @@ static bool metal_graph_stream_readahead_selected_experts_from_gpu(
         for (uint64_t i = 0; i < n_ids; i++) {
             const int32_t expert = selected[i];
             if (expert < 0 || (uint32_t)expert >= DS4_N_EXPERT) {
-                fprintf(stderr,
+                ds4_diag(
                         "ds4: Metal streaming prefill selected expert id %d is outside 0..%u at layer %u\n",
                         expert,
                         (uint32_t)DS4_N_EXPERT,
@@ -12643,7 +12696,7 @@ static bool metal_graph_stream_readahead_selected_experts_from_gpu(
         }
     }
     if (profile) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal streaming prefill selected readahead layer=%u "
                 "tokens=%u unique=%u ranges=%u gap=%u hint=%.2f GiB time=%.3f ms\n",
                 il,
@@ -12663,7 +12716,7 @@ static bool metal_graph_stream_map_token(
         const ds4_weights *weights) {
     ds4_model_map_span_vec spans;
     if (!weights_model_map_token_spans(weights, &spans)) {
-        fprintf(stderr, "ds4: Metal SSD streaming could not build token embedding span\n");
+        ds4_diag( "ds4: Metal SSD streaming could not build token embedding span\n");
         return false;
     }
     const bool ok = metal_graph_install_model_spans(model, &spans, "token embedding");
@@ -12676,7 +12729,7 @@ static bool metal_graph_stream_map_decode_static_all(
         const ds4_weights *weights) {
     ds4_model_map_span_vec spans;
     if (!weights_model_map_decode_static_spans(weights, true, true, &spans)) {
-        fprintf(stderr, "ds4: Metal SSD streaming could not build static decode spans\n");
+        ds4_diag( "ds4: Metal SSD streaming could not build static decode spans\n");
         return false;
     }
     const bool ok = metal_graph_install_model_spans(model, &spans, "static decode");
@@ -12690,7 +12743,7 @@ static bool metal_graph_stream_map_layer(
         uint32_t           il) {
     ds4_model_map_span_vec spans;
     if (!weights_model_map_spans(weights, il, il, false, &spans)) {
-        fprintf(stderr, "ds4: Metal SSD streaming could not build layer %u spans\n", il);
+        ds4_diag( "ds4: Metal SSD streaming could not build layer %u spans\n", il);
         return false;
     }
     const bool ok = metal_graph_install_model_spans(model, &spans, "layer");
@@ -12704,7 +12757,7 @@ static bool metal_graph_stream_map_layer_decode(
         uint32_t           il) {
     ds4_model_map_span_vec spans;
     if (!weights_model_map_decode_layer_spans(weights, il, &spans)) {
-        fprintf(stderr, "ds4: Metal SSD streaming could not build decode layer %u spans\n", il);
+        ds4_diag( "ds4: Metal SSD streaming could not build decode layer %u spans\n", il);
         return false;
     }
     const bool ok = metal_graph_install_model_spans(model, &spans, "decode layer");
@@ -12717,7 +12770,7 @@ static bool metal_graph_stream_map_output(
         const ds4_weights *weights) {
     ds4_model_map_span_vec spans;
     if (!weights_model_map_output_spans(weights, &spans)) {
-        fprintf(stderr, "ds4: Metal SSD streaming could not build output head spans\n");
+        ds4_diag( "ds4: Metal SSD streaming could not build output head spans\n");
         return false;
     }
     const bool ok = metal_graph_install_model_spans(model, &spans, "output head");
@@ -12804,7 +12857,7 @@ static uint32_t metal_graph_decode_indexer_sparse_threshold(const ds4_gpu_graph 
                 cached = (uint32_t)v;
                 parsed = 1;
             } else {
-                fprintf(stderr,
+                ds4_diag(
                         "ds4: invalid DS4_METAL_DECODE_INDEXER_SPARSE_THRESHOLD=%s; "
                         "expected 64, 128, 256, 512, 1024, 2048, or 4096\n",
                         env);
@@ -13016,7 +13069,7 @@ static bool metal_graph_check_hc_norm_fusion(
         const float norm_max = max_abs_diff(fused_norm_cpu, ref_norm_cpu, n_embd);
         const float norm_rms = rms_abs_diff(fused_norm_cpu, ref_norm_cpu, n_embd);
         const float tol = metal_graph_hc_norm_fusion_check_tolerance();
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal HC norm fusion check %s layer=%u pos=%u "
                 "out_max=%g out_rms=%g norm_max=%g norm_rms=%g tol=%g\n",
                 label ? label : "hc",
@@ -13028,7 +13081,7 @@ static bool metal_graph_check_hc_norm_fusion(
                 norm_rms,
                 tol);
         if (out_max > tol || norm_max > tol) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: Metal HC norm fusion check failed for %s layer=%u pos=%u\n",
                     label ? label : "hc",
                     il,
@@ -13408,7 +13461,7 @@ static bool metal_graph_streaming_expert_hotlist_load_file(
     }
     FILE *fp = fopen(path, "rb");
     if (!fp) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: failed to open streaming expert hotlist %s: %s\n",
                 path,
                 strerror(errno));
@@ -13457,7 +13510,7 @@ static bool metal_graph_streaming_expert_hotlist_load_file(
         continue;
 
 bad_line:
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: invalid streaming expert hotlist line %" PRIu64 " in %s\n",
                 lineno,
                 path);
@@ -13465,7 +13518,7 @@ bad_line:
         return false;
     }
     if (ferror(fp)) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: failed to read streaming expert hotlist %s: %s\n",
                 path,
                 strerror(errno));
@@ -13475,7 +13528,7 @@ bad_line:
     fclose(fp);
 
     if (loaded == 0) {
-        fprintf(stderr, "ds4: streaming expert hotlist %s had no usable nonzero entries\n", path);
+        ds4_diag( "ds4: streaming expert hotlist %s had no usable nonzero entries\n", path);
     }
     *loaded_out = loaded;
     return true;
@@ -13645,7 +13698,7 @@ static bool metal_graph_decode_cpu_router(
     if (ds4_gpu_routed_moe_set_selected_override(selected_i32, DS4_N_EXPERT_USED) == 0) return false;
 
     if (profile) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal CPU router layer=%u gate=%s down=%s sync=%.3f ms read=%.3f ms cpu=%.3f ms write=%.3f ms total=%.3f ms\n",
                 il,
                 tensor_type_name(layer->ffn_gate_exps->type),
@@ -13699,7 +13752,7 @@ static bool metal_graph_decode_selected_readahead_override(
     uint32_t unique = 0;
     for (uint32_t i = 0; i < DS4_N_EXPERT_USED; i++) {
         if (selected_ids[i] < 0 || (uint32_t)selected_ids[i] >= DS4_N_EXPERT) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: Metal streaming selected readahead expert id %d is outside 0..%u at layer %u\n",
                     selected_ids[i],
                     DS4_N_EXPERT,
@@ -13714,7 +13767,7 @@ static bool metal_graph_decode_selected_readahead_override(
         const uint64_t expert_id = (uint64_t)expert;
         if (expert_id > UINT64_MAX / gate_expert_bytes ||
             expert_id > UINT64_MAX / down_expert_bytes) {
-            fprintf(stderr, "ds4: Metal streaming selected readahead offset overflow\n");
+            ds4_diag( "ds4: Metal streaming selected readahead offset overflow\n");
             return false;
         }
         const uint64_t gate_rel = expert_id * gate_expert_bytes;
@@ -13722,7 +13775,7 @@ static bool metal_graph_decode_selected_readahead_override(
         if (gate_rel > UINT64_MAX - layer->ffn_gate_exps->abs_offset ||
             gate_rel > UINT64_MAX - layer->ffn_up_exps->abs_offset ||
             down_rel > UINT64_MAX - layer->ffn_down_exps->abs_offset) {
-            fprintf(stderr, "ds4: Metal streaming selected readahead offset overflow\n");
+            ds4_diag( "ds4: Metal streaming selected readahead offset overflow\n");
             return false;
         }
 
@@ -13763,7 +13816,7 @@ static bool metal_graph_decode_selected_readahead_override(
     const double t_done = profile ? now_sec() : 0.0;
 
     if (profile) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal streaming selected readahead layer=%u unique=%u sync=%.3f ms read=%.3f ms hint=%.3f ms resume=%.3f ms total=%.3f ms\n",
                 il,
                 unique,
@@ -13824,7 +13877,7 @@ static void metal_graph_selected_async_load_run(
     for (uint32_t i = 0; i < DS4_N_EXPERT_USED; i++) {
         if (job->selected_ids[i] < 0 ||
             (uint32_t)job->selected_ids[i] >= DS4_N_EXPERT) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: Metal streaming async selected expert id %d is outside 0..%u at layer %u\n",
                     job->selected_ids[i],
                     DS4_N_EXPERT,
@@ -13886,7 +13939,7 @@ static bool metal_graph_selected_async_load_ensure_worker(void) {
                                   NULL);
     if (rc != 0) {
         pthread_mutex_unlock(&g_metal_graph_selected_async_load_mutex);
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: failed to start Metal streaming async selected load worker: %s\n",
                 strerror(rc));
         return false;
@@ -13957,7 +14010,7 @@ static bool metal_graph_profile_router_selection(
     if (!g || !layer || !g->router_selected || !g->router_weights) return false;
 
     if (ds4_gpu_end_commands() == 0) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: failed to end Metal command batch for expert profile readback\n");
         return false;
     }
@@ -13975,12 +14028,12 @@ static bool metal_graph_profile_router_selection(
                             (uint64_t)DS4_N_EXPERT_USED * sizeof(weights[0])) != 0;
 
     if (ds4_gpu_begin_commands() == 0) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: failed to resume Metal command batch after expert profile readback\n");
         return false;
     }
     if (!read_ok) {
-        fprintf(stderr, "ds4: failed to read Metal router tensors for expert profile\n");
+        ds4_diag( "ds4: failed to read Metal router tensors for expert profile\n");
         return false;
     }
 
@@ -14248,11 +14301,11 @@ static bool metal_graph_encode_decode_layer(
             layer->attn_compressor_gate->dim[0] != DS4_N_EMBD ||
             layer->attn_compressor_kv->dim[1] != comp_width ||
             layer->attn_compressor_gate->dim[1] != comp_width) {
-            fprintf(stderr, "ds4: Metal graph compressor expects paired F16 compressor projections\n");
+            ds4_diag( "ds4: Metal graph compressor expects paired F16 compressor projections\n");
             ok = false;
         }
         if (ok && emit && g->layer_n_comp[il] >= g->layer_comp_cap[il]) {
-            fprintf(stderr, "ds4: Metal graph compressed KV cache capacity exceeded at layer %u\n", il);
+            ds4_diag( "ds4: Metal graph compressed KV cache capacity exceeded at layer %u\n", il);
             ok = false;
         }
         if (ok && !metal_graph_use_reference_compressor_pair_proj()) {
@@ -14326,11 +14379,11 @@ static bool metal_graph_encode_decode_layer(
                 layer->indexer_compressor_gate->dim[0] != DS4_N_EMBD ||
                 layer->indexer_compressor_kv->dim[1] != index_width ||
                 layer->indexer_compressor_gate->dim[1] != index_width) {
-                fprintf(stderr, "ds4: Metal graph indexer compressor expects paired F16 projections\n");
+                ds4_diag( "ds4: Metal graph indexer compressor expects paired F16 projections\n");
                 ok = false;
             }
             if (ok && emit && g->layer_n_index_comp[il] >= g->layer_comp_cap[il]) {
-                fprintf(stderr, "ds4: Metal graph indexer compressed KV cache capacity exceeded at layer %u\n", il);
+                ds4_diag( "ds4: Metal graph indexer compressed KV cache capacity exceeded at layer %u\n", il);
                 ok = false;
             }
             if (ok && !metal_graph_use_reference_compressor_pair_proj()) {
@@ -14404,14 +14457,14 @@ static bool metal_graph_encode_decode_layer(
                     !tensor_type_is_f16_or_q8_0(layer->indexer_attn_q_b->type) ||
                     layer->indexer_attn_q_b->dim[0] != q_rank ||
                     layer->indexer_attn_q_b->dim[1] != indexer_q_dim) {
-                    fprintf(stderr, "ds4: Metal graph indexer q projection expects F16 or Q8_0 weights\n");
+                    ds4_diag( "ds4: Metal graph indexer q projection expects F16 or Q8_0 weights\n");
                     ok = false;
                 }
                 if (ok && (!layer->indexer_proj ||
                            layer->indexer_proj->type != DS4_TENSOR_F16 ||
                            layer->indexer_proj->dim[0] != DS4_N_EMBD ||
                            layer->indexer_proj->dim[1] != DS4_N_INDEXER_HEAD)) {
-                    fprintf(stderr, "ds4: Metal graph indexer weight projection expects F16 weights\n");
+                    ds4_diag( "ds4: Metal graph indexer weight projection expects F16 weights\n");
                     ok = false;
                 }
                 if (ok) ok = metal_graph_matmul_plain_tensor(g->indexer_q,
@@ -15373,7 +15426,7 @@ static bool metal_graph_matmul_plain_tensor(
         return ds4_gpu_matmul_q8_0_tensor(out, model->map, model->size,
                                             w->abs_offset, in_dim, out_dim, x, n_tok) != 0;
     }
-    fprintf(stderr, "ds4: Metal plain matmul does not support %s\n", tensor_type_name(w->type));
+    ds4_diag( "ds4: Metal plain matmul does not support %s\n", tensor_type_name(w->type));
     return false;
 }
 
@@ -15588,7 +15641,7 @@ static void metal_graph_trace_layer_stages(
               ds4_gpu_tensor_read(g->cur_hc, 0, gpu_after_ffn_hc, hc_dim * sizeof(float)) != 0;
 
     if (ok) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal stage layer %u attn_cur=%g/%g attn_norm=%g/%g q=%g/%g kv=%g/%g attn_out=%g/%g after_attn_hc=%g/%g ffn_cur=%g/%g ffn_norm=%g/%g shared=%g/%g router_w=%g routed=%g/%g ffn_out=%g/%g after_ffn_hc=%g/%g\n",
                 il,
                 max_abs_diff(cpu_attn_cur, gpu_attn_cur, DS4_N_EMBD), rms_abs_diff(cpu_attn_cur, gpu_attn_cur, DS4_N_EMBD),
@@ -15604,14 +15657,14 @@ static void metal_graph_trace_layer_stages(
                 max_abs_diff(cpu_routed, gpu_routed, DS4_N_EMBD), rms_abs_diff(cpu_routed, gpu_routed, DS4_N_EMBD),
                 max_abs_diff(cpu_ffn_out, gpu_ffn_out, DS4_N_EMBD), rms_abs_diff(cpu_ffn_out, gpu_ffn_out, DS4_N_EMBD),
                 max_abs_diff(cpu_after_ffn_hc, gpu_after_ffn_hc, hc_dim), rms_abs_diff(cpu_after_ffn_hc, gpu_after_ffn_hc, hc_dim));
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal shared layer %u gate=%g/%g up=%g/%g mid=%g/%g down=%g/%g\n",
                 il,
                 max_abs_diff(cpu_shared_gate, gpu_shared_gate, shared_dim), rms_abs_diff(cpu_shared_gate, gpu_shared_gate, shared_dim),
                 max_abs_diff(cpu_shared_up, gpu_shared_up, shared_dim), rms_abs_diff(cpu_shared_up, gpu_shared_up, shared_dim),
                 max_abs_diff(cpu_shared_mid, gpu_shared_mid, shared_dim), rms_abs_diff(cpu_shared_mid, gpu_shared_mid, shared_dim),
                 max_abs_diff(cpu_shared, gpu_shared, DS4_N_EMBD), rms_abs_diff(cpu_shared, gpu_shared, DS4_N_EMBD));
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal routed layer %u mid=%g/%g out=%g/%g\n",
                 il,
                 max_abs_diff(routed_mid_all, gpu_routed_mid_all, DS4_N_EXPERT_USED * down_in_dim),
@@ -15619,7 +15672,7 @@ static void metal_graph_trace_layer_stages(
                 max_abs_diff(cpu_routed, gpu_routed, DS4_N_EMBD),
                 rms_abs_diff(cpu_routed, gpu_routed, DS4_N_EMBD));
         if (memcmp(selected, gpu_selected, sizeof(selected)) != 0) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: Metal stage layer %u router selected mismatch: cpu=[%d,%d,%d,%d,%d,%d] gpu=[%d,%d,%d,%d,%d,%d]\n",
                     il,
                     selected[0], selected[1], selected[2], selected[3], selected[4], selected[5],
@@ -15673,7 +15726,7 @@ static int metal_graph_decode_test(
         const token_vec   *prompt,
         bool               quality) {
     if (prompt->len <= 0) {
-        fprintf(stderr, "ds4: Metal graph test needs a non-empty prompt\n");
+        ds4_diag( "ds4: Metal graph test needs a non-empty prompt\n");
         return 1;
     }
 
@@ -15833,7 +15886,7 @@ static int metal_graph_decode_test(
     }
 
     if (ok) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal graph test layer0 diffs: embed_hc=%g hc_pre=%g attn_norm=%g q_rope=%g kv_rope=%g raw_cache=%g attn_out=%g after_attn_hc=%g ffn_cur=%g ffn_norm=%g shared=%g router_w=%g routed=%g ffn_out=%g after_ffn_hc=%g logits=%g\n",
                 max_abs_diff(cpu_hc, gpu_hc, hc_dim),
                 max_abs_diff(cpu_attn_cur, gpu_attn_cur, DS4_N_EMBD),
@@ -15852,7 +15905,7 @@ static int metal_graph_decode_test(
                 max_abs_diff(cpu_after_ffn_hc, gpu_after_ffn_hc, hc_dim),
                 max_abs_diff(cpu_logits, gpu_logits, vocab_dim));
         if (memcmp(selected, gpu_selected, sizeof(selected)) != 0) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: Metal graph router selected mismatch: cpu=[%d,%d,%d,%d,%d,%d] gpu=[%d,%d,%d,%d,%d,%d]\n",
                     selected[0], selected[1], selected[2], selected[3], selected[4], selected[5],
                     gpu_selected[0], gpu_selected[1], gpu_selected[2], gpu_selected[3], gpu_selected[4], gpu_selected[5]);
@@ -15861,9 +15914,9 @@ static int metal_graph_decode_test(
         print_vec_stats("metal graph kv", gpu_kv, DS4_N_HEAD_DIM);
         print_vec_stats("metal graph routed", gpu_routed, DS4_N_EMBD);
     } else {
-        fprintf(stderr, "ds4: Metal graph test failed while encoding first decode stages\n");
+        ds4_diag( "ds4: Metal graph test failed while encoding first decode stages\n");
         if (ds4_gpu_synchronize() == 0) {
-            fprintf(stderr, "ds4: Metal synchronize after graph test failure also failed\n");
+            ds4_diag( "ds4: Metal synchronize after graph test failure also failed\n");
         }
     }
 
@@ -15916,7 +15969,7 @@ static int metal_graph_first_token_full_test(
         const token_vec   *prompt,
         bool               quality) {
     if (prompt->len <= 0) {
-        fprintf(stderr, "ds4: full Metal graph test needs a non-empty prompt\n");
+        ds4_diag( "ds4: full Metal graph test needs a non-empty prompt\n");
         return 1;
     }
 
@@ -15972,7 +16025,7 @@ static int metal_graph_first_token_full_test(
             layer_forward_self_one(cpu_next, model, &weights->layer[il], cpu_cur, il, 0, token);
             if (ok) ok = ds4_gpu_tensor_read(g.cur_hc, 0, gpu_hc, hc_dim * sizeof(float)) != 0;
             if (ok) {
-                fprintf(stderr,
+                ds4_diag(
                         "ds4: Metal full graph layer %u%s hc_max=%g hc_rms=%g\n",
                         il,
                         teacher_force ? " teacher" : "",
@@ -16026,7 +16079,7 @@ static int metal_graph_first_token_full_test(
     if (ok) {
         const uint64_t cpu_top = argmax_f32(cpu_logits, vocab_dim);
         const uint64_t gpu_top = argmax_f32(gpu_logits, vocab_dim);
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal full first-token graph diffs: final_hc_max=%g final_hc_rms=%g logits_max=%g logits_rms=%g cpu_top=%llu gpu_top=%llu cpu_top_logit=%g gpu_top_logit=%g\n",
                 max_abs_diff(cpu_hc, gpu_hc, hc_dim),
                 rms_abs_diff(cpu_hc, gpu_hc, hc_dim),
@@ -16037,9 +16090,9 @@ static int metal_graph_first_token_full_test(
                 cpu_logits[cpu_top],
                 gpu_logits[gpu_top]);
     } else {
-        fprintf(stderr, "ds4: Metal full first-token graph test failed\n");
+        ds4_diag( "ds4: Metal full first-token graph test failed\n");
         if (ds4_gpu_synchronize() == 0) {
-            fprintf(stderr, "ds4: Metal synchronize after full graph failure also failed\n");
+            ds4_diag( "ds4: Metal synchronize after full graph failure also failed\n");
         }
     }
 
@@ -16084,7 +16137,7 @@ static bool metal_graph_encode_token_raw_swa(
         bool                   need_logits,
         bool                   allow_split_flush) {
     if (g->raw_cap == 0) {
-        fprintf(stderr, "ds4: Metal graph raw KV cache is not allocated\n");
+        ds4_diag( "ds4: Metal graph raw KV cache is not allocated\n");
         return false;
     }
     const uint32_t raw_row = pos % g->raw_cap;
@@ -16343,7 +16396,7 @@ static bool metal_graph_warmup_prefill_kernels(
     }
     if (ok) ok = ds4_gpu_end_commands() != 0;
     if (!ok) {
-        fprintf(stderr, "ds4: Metal prefill kernel warmup failed\n");
+        ds4_diag( "ds4: Metal prefill kernel warmup failed\n");
         return false;
     }
 
@@ -16363,7 +16416,7 @@ static bool metal_graph_indexer_stage_profile_boundary(
     if (ds4_gpu_end_commands() == 0) return false;
     const double now = now_sec();
     if (stage != NULL) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: metal indexer stage layer=%u pos=%u tokens=%u comp=%u %s=%.3f ms\n",
                 il,
                 pos0,
@@ -16411,7 +16464,7 @@ static bool metal_graph_layer_stage_profile_boundary(
         double     *stage_t0) {
     if (ds4_gpu_end_commands() == 0) return false;
     const double now = now_sec();
-    fprintf(stderr,
+    ds4_diag(
             "ds4: metal layer stage part=%s layer=%u pos=%u tokens=%u %s=%.3f ms\n",
             part,
             il,
@@ -16431,7 +16484,7 @@ static bool metal_graph_q_stage_profile_boundary(
         double     *stage_t0) {
     if (ds4_gpu_end_commands() == 0) return false;
     const double now = now_sec();
-    fprintf(stderr,
+    ds4_diag(
             "ds4: metal Q path stage layer=%u pos=%u tokens=%u %s=%.3f ms\n",
             il,
             pos0,
@@ -16856,7 +16909,7 @@ static bool metal_graph_encode_layer_attention_batch(
         const bool have_attn_comp = layer->attn_compressor_kv && layer->attn_compressor_gate &&
                                     layer->attn_compressor_ape && layer->attn_compressor_norm;
         if (!have_attn_comp) {
-            fprintf(stderr, "ds4: Metal layer-major prefill needs attention compressor weights\n");
+            ds4_diag( "ds4: Metal layer-major prefill needs attention compressor weights\n");
             ok = false;
         }
         if (ok) {
@@ -16891,11 +16944,11 @@ static bool metal_graph_encode_layer_attention_batch(
         if (zero_prefix) {
             n_comp = n_tokens / ratio;
             if (ok && n_comp > g->layer_comp_cap[il]) {
-                fprintf(stderr, "ds4: Metal layer-major compressed KV cache capacity exceeded at layer %u\n", il);
+                ds4_diag( "ds4: Metal layer-major compressed KV cache capacity exceeded at layer %u\n", il);
                 ok = false;
             }
             if (ok && DS4_GPU_ATTN_COMP_CACHE_F16 && n_comp > g->attn_comp_stage_cap) {
-                fprintf(stderr, "ds4: Metal graph compressed KV staging capacity exceeded at layer %u\n", il);
+                ds4_diag( "ds4: Metal graph compressed KV staging capacity exceeded at layer %u\n", il);
                 ok = false;
             }
             ds4_gpu_tensor *attn_comp_target = NULL;
@@ -16974,11 +17027,11 @@ static bool metal_graph_encode_layer_attention_batch(
                 const uint32_t comp_before = g->layer_n_comp[il];
                 const uint32_t comp_chunk = n_tokens / ratio;
                 if (comp_before + comp_chunk > g->layer_comp_cap[il]) {
-                    fprintf(stderr, "ds4: Metal graph compressed KV cache capacity exceeded at layer %u\n", il);
+                    ds4_diag( "ds4: Metal graph compressed KV cache capacity exceeded at layer %u\n", il);
                     ok = false;
                 }
                 if (ok && DS4_GPU_ATTN_COMP_CACHE_F16 && comp_chunk > g->attn_comp_stage_cap) {
-                    fprintf(stderr, "ds4: Metal graph compressed KV staging capacity exceeded at layer %u\n", il);
+                    ds4_diag( "ds4: Metal graph compressed KV staging capacity exceeded at layer %u\n", il);
                     ok = false;
                 }
                 ds4_gpu_tensor *attn_comp_target =
@@ -17083,7 +17136,7 @@ static bool metal_graph_encode_layer_attention_batch(
                     const uint32_t pos = pos0 + t;
                     const bool emit = ((pos + 1u) % ratio) == 0u;
                     if (emit && g->layer_n_comp[il] >= g->layer_comp_cap[il]) {
-                        fprintf(stderr, "ds4: Metal graph compressed KV cache capacity exceeded at layer %u\n", il);
+                        ds4_diag( "ds4: Metal graph compressed KV cache capacity exceeded at layer %u\n", il);
                         ok = false;
                         break;
                     }
@@ -17148,7 +17201,7 @@ static bool metal_graph_encode_layer_attention_batch(
             if (!layer->indexer_compressor_kv || !layer->indexer_compressor_gate ||
                 !layer->indexer_compressor_ape || !layer->indexer_compressor_norm ||
                 !layer->indexer_attn_q_b || !layer->indexer_proj) {
-                fprintf(stderr, "ds4: Metal layer-major prefill needs indexer weights\n");
+                ds4_diag( "ds4: Metal layer-major prefill needs indexer weights\n");
                 ok = false;
             }
             if (ok) {
@@ -17213,7 +17266,7 @@ static bool metal_graph_encode_layer_attention_batch(
                                                      n_tokens) != 0;
             if (zero_prefix) {
                 if (ok && n_comp > g->layer_comp_cap[il]) {
-                    fprintf(stderr, "ds4: Metal layer-major indexer cache capacity exceeded at layer %u\n", il);
+                    ds4_diag( "ds4: Metal layer-major indexer cache capacity exceeded at layer %u\n", il);
                     ok = false;
                 }
                 if (ok) {
@@ -17290,7 +17343,7 @@ static bool metal_graph_encode_layer_attention_batch(
                     const uint32_t index_before = g->layer_n_index_comp[il];
                     const uint32_t index_chunk = n_tokens / ratio;
                     if (index_before + index_chunk > g->layer_comp_cap[il]) {
-                        fprintf(stderr, "ds4: Metal graph indexer compressed KV cache capacity exceeded at layer %u\n", il);
+                        ds4_diag( "ds4: Metal graph indexer compressed KV cache capacity exceeded at layer %u\n", il);
                         ok = false;
                     }
                     ds4_gpu_tensor *index_view = NULL;
@@ -17375,7 +17428,7 @@ static bool metal_graph_encode_layer_attention_batch(
                         const uint32_t pos = pos0 + t;
                         const bool emit = ((pos + 1u) % ratio) == 0u;
                         if (emit && g->layer_n_index_comp[il] >= g->layer_comp_cap[il]) {
-                            fprintf(stderr, "ds4: Metal graph indexer compressed KV cache capacity exceeded at layer %u\n", il);
+                            ds4_diag( "ds4: Metal graph indexer compressed KV cache capacity exceeded at layer %u\n", il);
                             ok = false;
                             break;
                         }
@@ -18337,12 +18390,12 @@ static bool metal_graph_encode_layer_batch(
         uint32_t                n_tokens) {
     bool ok = metal_graph_encode_layer_attention_batch(g, model, layer, il, pos0, n_tokens);
     if (!ok) {
-        fprintf(stderr, "ds4: gpu layer %u attention batch encode failed\n", il);
+        ds4_diag( "ds4: gpu layer %u attention batch encode failed\n", il);
     }
     if (ok) {
         ok = metal_graph_encode_layer_ffn_batch(g, model, layer, il, pos0, n_tokens);
         if (!ok) {
-            fprintf(stderr, "ds4: gpu layer %u ffn batch encode failed\n", il);
+            ds4_diag( "ds4: gpu layer %u ffn batch encode failed\n", il);
         }
     }
     if (ok) {
@@ -18361,7 +18414,7 @@ static bool metal_graph_eval_token_raw_swa_streaming(
         uint32_t               pos,
         float                 *logits) {
     if (g->raw_cap == 0) {
-        fprintf(stderr, "ds4: Metal graph raw KV cache is not allocated\n");
+        ds4_diag( "ds4: Metal graph raw KV cache is not allocated\n");
         return false;
     }
 
@@ -18429,7 +18482,7 @@ static bool metal_graph_eval_token_raw_swa_streaming(
         }
         const double t_read = (profile || throttle) ? now_sec() : 0.0;
         if (profile) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: metal SSD streaming batched token pos=%u encode=%.3f ms execute=%.3f ms read=%.3f ms total=%.3f ms logits=%d\n",
                     pos,
                     (t_encoded - t0) * 1000.0,
@@ -18443,7 +18496,7 @@ static bool metal_graph_eval_token_raw_swa_streaming(
         }
         if (!ok) {
             if (ds4_gpu_synchronize() == 0) {
-                fprintf(stderr, "ds4: Metal synchronize after batched SSD streaming graph eval failure also failed\n");
+                ds4_diag( "ds4: Metal synchronize after batched SSD streaming graph eval failure also failed\n");
             }
         }
         return ok;
@@ -18509,7 +18562,7 @@ static bool metal_graph_eval_token_raw_swa_streaming(
             encode_s += t_head_encoded - t_head0;
             execute_s += t_done - t_head_encoded;
         }
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: metal SSD streaming token pos=%u encode=%.3f ms execute=%.3f ms read=%.3f ms total=%.3f ms logits=%d\n",
                 pos,
                 encode_s * 1000.0,
@@ -18521,7 +18574,7 @@ static bool metal_graph_eval_token_raw_swa_streaming(
     if (ok) graph_power_note_decode_token(g, t_read - t0);
     if (!ok) {
         if (ds4_gpu_synchronize() == 0) {
-            fprintf(stderr, "ds4: Metal synchronize after SSD streaming graph eval failure also failed\n");
+            ds4_diag( "ds4: Metal synchronize after SSD streaming graph eval failure also failed\n");
         }
     }
     return ok;
@@ -18554,7 +18607,7 @@ static bool metal_graph_eval_token_raw_swa(
     }
     const double t_read = (profile || throttle) ? now_sec() : 0.0;
     if (profile) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: metal graph token pos=%u encode=%.3f ms execute=%.3f ms read=%.3f ms total=%.3f ms logits=%d\n",
                 pos,
                 (t_encoded - t0) * 1000.0,
@@ -18566,7 +18619,7 @@ static bool metal_graph_eval_token_raw_swa(
     if (ok) graph_power_note_decode_token(g, t_read - t0);
     if (!ok) {
         if (ds4_gpu_synchronize() == 0) {
-            fprintf(stderr, "ds4: Metal synchronize after graph eval failure also failed\n");
+            ds4_diag( "ds4: Metal synchronize after graph eval failure also failed\n");
         }
     }
     return ok;
@@ -18689,7 +18742,7 @@ static bool metal_graph_prefill_decode_streaming_range(
                                             pos,
                                             token_logits)) {
             if (ds4_gpu_synchronize() == 0) {
-                fprintf(stderr, "ds4: Metal synchronize after decode-style streaming prefill failure also failed\n");
+                ds4_diag( "ds4: Metal synchronize after decode-style streaming prefill failure also failed\n");
             }
             return false;
         }
@@ -18705,7 +18758,7 @@ static bool metal_graph_prefill_decode_streaming_range(
             return true;
         }
         if (show_progress) {
-            fprintf(stderr, "ds4: gpu streaming prefill token %u/%u\r",
+            ds4_diag( "ds4: gpu streaming prefill token %u/%u\r",
                     i + 1u,
                     n_tokens);
             fflush(stderr);
@@ -18715,7 +18768,7 @@ static bool metal_graph_prefill_decode_streaming_range(
 
     if (profile) {
         const double t1 = now_sec();
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: gpu decode-style streaming prefill start=%u tokens=%u total=%.3f ms\n",
                 start,
                 n_tokens,
@@ -18786,7 +18839,7 @@ static bool metal_graph_seed_streaming_expert_cache_from_prefill(
         const uint64_t down_row_bytes = routed_expert_row_bytes(layer->ffn_down_exps);
         if (layer->ffn_gate_exps->dim[1] > UINT64_MAX / gate_row_bytes ||
             layer->ffn_down_exps->dim[1] > UINT64_MAX / down_row_bytes) {
-            fprintf(stderr, "ds4: Metal prefill expert-cache seed byte size overflow at layer %u\n", il);
+            ds4_diag( "ds4: Metal prefill expert-cache seed byte size overflow at layer %u\n", il);
             return false;
         }
         const uint64_t gate_expert_bytes = layer->ffn_gate_exps->dim[1] * gate_row_bytes;
@@ -18814,7 +18867,7 @@ static bool metal_graph_seed_streaming_expert_cache_from_prefill(
         seeded_layers++;
     }
     if (profile) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal streaming prefill expert-cache seed k=%u layers=%u rows=%u time=%.3f ms\n",
                 seed_tokens,
                 seeded_layers,
@@ -18840,7 +18893,7 @@ static bool metal_graph_seed_streaming_expert_cache_from_hotlist(
         const uint64_t down_row_bytes = routed_expert_row_bytes(layer->ffn_down_exps);
         if (layer->ffn_gate_exps->dim[1] > UINT64_MAX / gate_row_bytes ||
             layer->ffn_down_exps->dim[1] > UINT64_MAX / down_row_bytes) {
-            fprintf(stderr, "ds4: Metal expert hotlist budget byte size overflow at layer %u\n", il);
+            ds4_diag( "ds4: Metal expert hotlist budget byte size overflow at layer %u\n", il);
             return false;
         }
         const uint64_t gate_expert_bytes = layer->ffn_gate_exps->dim[1] * gate_row_bytes;
@@ -18860,7 +18913,7 @@ static bool metal_graph_seed_streaming_expert_cache_from_hotlist(
         getenv("DS4_METAL_STREAMING_EXPERT_HOTLIST_PROFILE") != NULL;
     if (current_count >= preload_count) {
         if (profile) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: Metal streaming expert hotlist seed skipped preload=%u current=%u\n",
                     preload_count,
                     current_count);
@@ -18913,7 +18966,7 @@ static bool metal_graph_seed_streaming_expert_cache_from_hotlist(
         const uint64_t down_row_bytes = routed_expert_row_bytes(layer->ffn_down_exps);
         if (layer->ffn_gate_exps->dim[1] > UINT64_MAX / gate_row_bytes ||
             layer->ffn_down_exps->dim[1] > UINT64_MAX / down_row_bytes) {
-            fprintf(stderr, "ds4: Metal expert hotlist seed byte size overflow at layer %u\n", il);
+            ds4_diag( "ds4: Metal expert hotlist seed byte size overflow at layer %u\n", il);
             return false;
         }
         const uint64_t gate_expert_bytes = layer->ffn_gate_exps->dim[1] * gate_row_bytes;
@@ -18947,7 +19000,7 @@ static bool metal_graph_seed_streaming_expert_cache_from_hotlist(
         } else {
             source_name = "built-in";
         }
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal streaming expert hotlist seed source=%s preload=%u loaded=%u layers=%u experts=%u time=%.3f ms\n",
                 source_name,
                 preload_count,
@@ -18989,7 +19042,7 @@ static bool metal_graph_eval_token_raw_swa_top(
     }
     if (!ok) {
         if (ds4_gpu_synchronize() == 0) {
-            fprintf(stderr, "ds4: Metal synchronize after top-only graph eval failure also failed\n");
+            ds4_diag( "ds4: Metal synchronize after top-only graph eval failure also failed\n");
         }
     }
     return ok;
@@ -19297,7 +19350,7 @@ static bool imatrix_collector_save(
         const char                  *path) {
     FILE *fp = fopen(path, "wb");
     if (!fp) {
-        fprintf(stderr, "ds4: failed to open imatrix output %s: %s\n", path, strerror(errno));
+        ds4_diag( "ds4: failed to open imatrix output %s: %s\n", path, strerror(errno));
         return false;
     }
 
@@ -19336,7 +19389,7 @@ static bool imatrix_collector_save(
     }
 
     if (fclose(fp) != 0) {
-        fprintf(stderr, "ds4: failed to close imatrix output %s: %s\n", path, strerror(errno));
+        ds4_diag( "ds4: failed to close imatrix output %s: %s\n", path, strerror(errno));
         return false;
     }
     return true;
@@ -19440,10 +19493,10 @@ static bool metal_graph_prefill_layer_major(
                                                 start,
                                                 n_tokens);
             if (!ok) {
-                fprintf(stderr, "ds4: gpu whole-prefill layer %u encode failed\n", il);
+                ds4_diag( "ds4: gpu whole-prefill layer %u encode failed\n", il);
             }
             if (show_progress) {
-                fprintf(stderr, "ds4: gpu prefill layer %u/%u\r", il + 1, (uint32_t)DS4_N_LAYER);
+                ds4_diag( "ds4: gpu prefill layer %u/%u\r", il + 1, (uint32_t)DS4_N_LAYER);
                 fflush(stderr);
             }
         }
@@ -19481,7 +19534,7 @@ static bool metal_graph_prefill_layer_major(
         if (last_hc) ds4_gpu_tensor_free(last_hc);
         if (!ok) {
             if (ds4_gpu_synchronize() == 0) {
-                fprintf(stderr, "ds4: Metal synchronize after whole-prefill graph failure also failed\n");
+                ds4_diag( "ds4: Metal synchronize after whole-prefill graph failure also failed\n");
             }
             return false;
         }
@@ -19492,7 +19545,7 @@ static bool metal_graph_prefill_layer_major(
         }
         if (profile) {
             const double t_read = now_sec();
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: gpu graph prefill total tokens=%u encode=%.3f ms execute=%.3f ms read=%.3f ms total=%.3f ms\n",
                     n_tokens,
                     (t_encoded - t0) * 1000.0,
@@ -19568,7 +19621,7 @@ static bool metal_graph_prefill_layer_major(
         encode_s += t_embed_encoded - t_layer0;
         execute_s += t_embed_done - t_embed_encoded;
         if (split_profile) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: metal layer-major prefill embed encode=%.3f ms execute=%.3f ms\n",
                     (t_embed_encoded - t_layer0) * 1000.0,
                     (t_embed_done - t_embed_encoded) * 1000.0);
@@ -19580,7 +19633,7 @@ static bool metal_graph_prefill_layer_major(
                                                       layer_prepare_ahead);
         }
         if (ds4_gpu_synchronize() == 0) {
-            fprintf(stderr, "ds4: Metal synchronize after layer-major prefill embed failure also failed\n");
+            ds4_diag( "ds4: Metal synchronize after layer-major prefill embed failure also failed\n");
         }
         return false;
     }
@@ -19657,7 +19710,7 @@ static bool metal_graph_prefill_layer_major(
                                                                   start,
                                                                   n_tokens);
             if (!ok) {
-                fprintf(stderr, "ds4: gpu layer-major prefill layer %u attention encode failed\n", il);
+                ds4_diag( "ds4: gpu layer-major prefill layer %u attention encode failed\n", il);
             }
             const double t_attn_encoded = now_sec();
             if (ok) ok = ds4_gpu_end_commands() != 0;
@@ -19672,7 +19725,7 @@ static bool metal_graph_prefill_layer_major(
                                                             start,
                                                             n_tokens);
             if (!ok) {
-                fprintf(stderr, "ds4: gpu layer-major prefill layer %u ffn encode failed\n", il);
+                ds4_diag( "ds4: gpu layer-major prefill layer %u ffn encode failed\n", il);
             }
             if (ok) {
                 ds4_gpu_tensor *tmp = g->batch_cur_hc;
@@ -19697,7 +19750,7 @@ static bool metal_graph_prefill_layer_major(
 
             encode_s += (t_attn_encoded - t_attn0) + (t_ffn_encoded - t_ffn0);
             execute_s += (t_attn_done - t_attn_encoded) + (t_ffn_done - t_ffn_encoded);
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: metal layer-major prefill layer %u attn encode=%.3f execute=%.3f ms ffn encode=%.3f execute=%.3f ms\n",
                     il,
                     (t_attn_encoded - t_attn0) * 1000.0,
@@ -19714,7 +19767,7 @@ static bool metal_graph_prefill_layer_major(
                                                         start,
                                                         n_tokens);
             if (!ok) {
-                fprintf(stderr, "ds4: gpu layer-major prefill layer %u encode failed\n", il);
+                ds4_diag( "ds4: gpu layer-major prefill layer %u encode failed\n", il);
             }
             if (ok) ok = metal_graph_capture_prefill_seed_router_selected(g,
                                                                           il,
@@ -19734,7 +19787,7 @@ static bool metal_graph_prefill_layer_major(
             if (profile) {
                 encode_s += t_encoded - t_chunk0;
                 execute_s += t_done - t_encoded;
-                fprintf(stderr,
+                ds4_diag(
                         "ds4: gpu layer-major prefill layer %u encode=%.3f ms execute=%.3f ms\n",
                         il,
                         (t_encoded - t_chunk0) * 1000.0,
@@ -19769,7 +19822,7 @@ static bool metal_graph_prefill_layer_major(
                                                           layer_prepare_ahead);
             }
             if (ds4_gpu_synchronize() == 0) {
-                fprintf(stderr, "ds4: Metal synchronize after layer-major prefill failure also failed\n");
+                ds4_diag( "ds4: Metal synchronize after layer-major prefill failure also failed\n");
             }
             return false;
         }
@@ -19781,7 +19834,7 @@ static bool metal_graph_prefill_layer_major(
                                                   il + 1,
                                                   prompt->len);
         if (show_progress) {
-            fprintf(stderr, "ds4: gpu prefill layer %u/%u\r", il + 1, (uint32_t)DS4_N_LAYER);
+            ds4_diag( "ds4: gpu prefill layer %u/%u\r", il + 1, (uint32_t)DS4_N_LAYER);
             fflush(stderr);
         }
     }
@@ -19791,7 +19844,7 @@ static bool metal_graph_prefill_layer_major(
                                                       layer_prepare_ahead);
         }
         if (ds4_gpu_synchronize() == 0) {
-            fprintf(stderr, "ds4: Metal synchronize after layer-major prefill failure also failed\n");
+            ds4_diag( "ds4: Metal synchronize after layer-major prefill failure also failed\n");
         }
         return false;
     }
@@ -19859,12 +19912,12 @@ static bool metal_graph_prefill_layer_major(
         encode_s += t_head_encoded - t_head0;
         execute_s += t_head_done - t_head_encoded;
         if (split_profile) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: gpu layer-major prefill head encode=%.3f ms execute=%.3f ms\n",
                     (t_head_encoded - t_head0) * 1000.0,
                     (t_head_done - t_head_encoded) * 1000.0);
         }
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: gpu layer-major prefill total tokens=%u encode=%.3f ms execute=%.3f ms read=%.3f ms total=%.3f ms\n",
                 n_tokens,
                 encode_s * 1000.0,
@@ -20025,7 +20078,7 @@ static bool metal_graph_prefill_chunked_range(
                                                   display_progress_ud);
         if (!ok) {
             if (ds4_gpu_synchronize() == 0) {
-                fprintf(stderr, "ds4: Metal synchronize after chunked prefill failure also failed\n");
+                ds4_diag( "ds4: Metal synchronize after chunked prefill failure also failed\n");
             }
             return false;
         }
@@ -20044,7 +20097,7 @@ static bool metal_graph_prefill_chunked_range(
     if (show_progress) fputc('\n', stderr);
     if (profile) {
         const double t_read = now_sec();
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: gpu chunked prefill start=%u tokens=%u chunk=%u total=%.3f ms\n",
                 start,
                 n_tokens,
@@ -20489,7 +20542,7 @@ static int metal_graph_prompt_logits_test(
     }
 
     if (n_test <= 0 || n_test > ctx_size) {
-        fprintf(stderr, "ds4: Metal graph prompt test needs 1..%d prompt tokens\n", ctx_size);
+        ds4_diag( "ds4: Metal graph prompt test needs 1..%d prompt tokens\n", ctx_size);
         return 1;
     }
 
@@ -20500,7 +20553,7 @@ static int metal_graph_prompt_logits_test(
                                         raw_cap, (uint32_t)ctx_size, (uint32_t)n_test, false);
     if (!ok) {
         metal_graph_free(&g);
-        fprintf(stderr, "ds4: failed to initialize Metal graph prompt test runtime\n");
+        ds4_diag( "ds4: failed to initialize Metal graph prompt test runtime\n");
         return 1;
     }
     const bool memory_report = getenv("DS4_METAL_MEMORY_REPORT") != NULL;
@@ -20539,13 +20592,13 @@ static int metal_graph_prompt_logits_test(
         const char *dump_gpu = getenv("DS4_METAL_GRAPH_DUMP_LOGITS");
         if (dump_gpu && dump_gpu[0]) {
             if (write_f32_binary_file(dump_gpu, gpu_logits, DS4_N_VOCAB)) {
-                fprintf(stderr, "ds4: wrote Metal graph logits to %s\n", dump_gpu);
+                ds4_diag( "ds4: wrote Metal graph logits to %s\n", dump_gpu);
             }
         }
         const char *dump_cpu = getenv("DS4_CPU_DUMP_LOGITS");
         if (dump_cpu && dump_cpu[0]) {
             if (write_f32_binary_file(dump_cpu, cpu_logits, DS4_N_VOCAB)) {
-                fprintf(stderr, "ds4: wrote CPU logits to %s\n", dump_cpu);
+                ds4_diag( "ds4: wrote CPU logits to %s\n", dump_cpu);
             }
         }
         if (getenv("DS4_METAL_GRAPH_TRACE_CACHE") != NULL ||
@@ -20565,7 +20618,7 @@ static int metal_graph_prompt_logits_test(
                                    gpu_raw_phys + (uint64_t)phys * DS4_N_HEAD_DIM,
                                    (size_t)DS4_N_HEAD_DIM * sizeof(float));
                         }
-                        fprintf(stderr,
+                        ds4_diag(
                                 "ds4: cache trace layer %u raw_n=%u raw_start=%u raw_max=%g raw_rms=%g\n",
                                 il, n_raw, raw_start,
                                 max_abs_diff(cpu_cache.layer[il].raw_kv, gpu_raw_logical, raw_logical_n),
@@ -20593,7 +20646,7 @@ static int metal_graph_prompt_logits_test(
                                                     gpu_comp, n * sizeof(float)) != 0;
                 }
                 if (comp_read) {
-                    fprintf(stderr,
+                    ds4_diag(
                             "ds4: comp trace layer %u n=%u attn_max=%g attn_rms=%g\n",
                             il, n_comp,
                             max_abs_diff(cpu_cache.layer[il].attn_comp_kv, gpu_comp, n),
@@ -20606,7 +20659,7 @@ static int metal_graph_prompt_logits_test(
                     const uint64_t ni = (uint64_t)n_index * DS4_N_INDEXER_HEAD_DIM;
                     float *gpu_index = xmalloc((size_t)ni * sizeof(float));
                     if (ds4_gpu_tensor_read(g.layer_index_comp_cache[il], 0, gpu_index, ni * sizeof(float)) != 0) {
-                        fprintf(stderr,
+                        ds4_diag(
                                 "ds4: comp trace layer %u n=%u index_max=%g index_rms=%g\n",
                                 il, n_index,
                                 max_abs_diff(cpu_cache.layer[il].index_comp_kv, gpu_index, ni),
@@ -20618,7 +20671,7 @@ static int metal_graph_prompt_logits_test(
         }
         const uint64_t cpu_top = argmax_f32(cpu_logits, DS4_N_VOCAB);
         const uint64_t gpu_top = argmax_f32(gpu_logits, DS4_N_VOCAB);
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal prompt graph logits: tokens=%d logits_max=%g logits_rms=%g cpu_top=%llu gpu_top=%llu cpu_top_logit=%g gpu_top_logit=%g\n",
                 n_test,
                 max_abs_diff(cpu_logits, gpu_logits, DS4_N_VOCAB),
@@ -20629,7 +20682,7 @@ static int metal_graph_prompt_logits_test(
                 gpu_logits[gpu_top]);
         if (oracle_logits) {
             const uint64_t oracle_top = argmax_f32(oracle_logits, DS4_N_VOCAB);
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: oracle logits: tokens=%d oracle_top=%llu oracle_top_logit=%g cpu_max=%g cpu_rms=%g metal_max=%g metal_rms=%g\n",
                     n_test,
                     (unsigned long long)oracle_top,
@@ -20640,9 +20693,9 @@ static int metal_graph_prompt_logits_test(
                     rms_abs_diff(gpu_logits, oracle_logits, DS4_N_VOCAB));
         }
     } else {
-        fprintf(stderr, "ds4: Metal prompt graph logits test failed\n");
+        ds4_diag( "ds4: Metal prompt graph logits test failed\n");
         if (ds4_gpu_synchronize() == 0) {
-            fprintf(stderr, "ds4: Metal synchronize after prompt graph failure also failed\n");
+            ds4_diag( "ds4: Metal synchronize after prompt graph failure also failed\n");
         }
     }
 
@@ -20856,7 +20909,7 @@ static bool cpu_load_directional_steering(ds4_engine *e) {
 
     const char *path = e->directional_steering_file;
     if (!path || !path[0]) {
-        fprintf(stderr, "ds4: directional steering needs --dir-steering-file\n");
+        ds4_diag( "ds4: directional steering needs --dir-steering-file\n");
         return false;
     }
 
@@ -20865,10 +20918,10 @@ static bool cpu_load_directional_steering(ds4_engine *e) {
     if (!read_f32_binary_file(path, e->directional_steering_dirs, n)) {
         free(e->directional_steering_dirs);
         e->directional_steering_dirs = NULL;
-        fprintf(stderr, "ds4: failed to load directional steering vectors from %s\n", path);
+        ds4_diag( "ds4: failed to load directional steering vectors from %s\n", path);
         return false;
     }
-    fprintf(stderr, "ds4: CPU directional steering enabled: %s attn=%g ffn=%g\n",
+    ds4_diag( "ds4: CPU directional steering enabled: %s attn=%g ffn=%g\n",
             path,
             (double)e->directional_steering_attn_scale,
             (double)e->directional_steering_ffn_scale);
@@ -21210,7 +21263,7 @@ static void bpe_tokenize_text(const ds4_vocab *vocab, const char *text, token_ve
 static int vocab_lookup(const ds4_vocab *vocab, const char *text) {
     int token = -1;
     if (!table_get(&vocab->token_to_id, text, strlen(text), &token)) {
-        fprintf(stderr, "ds4: required tokenizer token is missing: %s\n", text);
+        ds4_diag( "ds4: required tokenizer token is missing: %s\n", text);
         exit(1);
     }
     return token;
@@ -21803,7 +21856,7 @@ static int generate_raw_swa_cpu(
         void              * progress_ud) {
     (void)progress;
     (void)progress_ud;
-    fprintf(stderr, "ds4: using CPU generation with layer-major prefill\n");
+    ds4_diag( "ds4: using CPU generation with layer-major prefill\n");
 
     ds4_kv_cache cache;
     kv_cache_init(&cache, (uint32_t)ctx_size, 0);
@@ -21816,7 +21869,7 @@ static int generate_raw_swa_cpu(
     const double t_prefill0 = now_sec();
 
     if (prompt->len <= 0 || prompt->len > ctx_size) {
-        fprintf(stderr, "ds4: prompt is empty or exceeds context size\n");
+        ds4_diag( "ds4: prompt is empty or exceeds context size\n");
         free(logits);
         cpu_decode_scratch_free(&decode_scratch);
         kv_cache_free(&cache);
@@ -21829,7 +21882,7 @@ static int generate_raw_swa_cpu(
                             directional_steering_ffn);
 
     const double t_prefill1 = now_sec();
-    fprintf(stderr, "ds4: prefill %d/%d done\n", prompt->len, prompt->len);
+    ds4_diag( "ds4: prefill %d/%d done\n", prompt->len, prompt->len);
     const char *dump_prefill_logits = getenv("DS4_CPU_DUMP_PREFILL_LOGITS");
     if (dump_prefill_logits && dump_prefill_logits[0]) {
         if (!write_f32_binary_file(dump_prefill_logits, logits, DS4_N_VOCAB)) {
@@ -21838,7 +21891,7 @@ static int generate_raw_swa_cpu(
             kv_cache_free(&cache);
             return 1;
         }
-        fprintf(stderr, "ds4: wrote CPU prefill logits to %s\n", dump_prefill_logits);
+        ds4_diag( "ds4: wrote CPU prefill logits to %s\n", dump_prefill_logits);
     }
 
     int n_generated = 0;
@@ -21878,7 +21931,7 @@ static int generate_raw_swa_cpu(
         ds4_alloc_guard_end();
         if (token_timing) {
             const double t_eval1 = now_sec();
-            fprintf(stderr, "ds4: decode eval %d took %.3f ms\n", n_decode_eval + 1, (t_eval1 - t_eval0) * 1000.0);
+            ds4_diag( "ds4: decode eval %d took %.3f ms\n", n_decode_eval + 1, (t_eval1 - t_eval0) * 1000.0);
         }
         n_decode_eval++;
         pos++;
@@ -21925,10 +21978,10 @@ static int generate_metal_graph_raw_swa(
         void              * emit_ud,
         ds4_session_progress_fn progress,
         void              * progress_ud) {
-    fprintf(stderr, "ds4: using GPU graph generation with graph prefill\n");
+    ds4_diag( "ds4: using GPU graph generation with graph prefill\n");
 
     if (prompt->len <= 0 || prompt->len > ctx_size) {
-        fprintf(stderr, "ds4: prompt is empty or exceeds context size\n");
+        ds4_diag( "ds4: prompt is empty or exceeds context size\n");
         return 1;
     }
 
@@ -21936,7 +21989,7 @@ static int generate_metal_graph_raw_swa(
         metal_graph_prefill_cap_for_prompt(prompt->len, prefill_chunk);
     const uint32_t raw_cap = metal_graph_raw_cap_for_context(ctx_size, prefill_cap);
     if (prefill_cap < (uint32_t)prompt->len) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: using chunked GPU prefill (%u-token chunks for %d prompt tokens)\n",
                 prefill_cap,
                 prompt->len);
@@ -21945,7 +21998,7 @@ static int generate_metal_graph_raw_swa(
     bool ok = metal_graph_alloc_raw_cap(&g, weights, &weights->layer[0],
                                         raw_cap, (uint32_t)ctx_size, prefill_cap, false);
     if (!ok) {
-        fprintf(stderr, "ds4: failed to allocate GPU graph runtime\n");
+        ds4_diag( "ds4: failed to allocate GPU graph runtime\n");
         return 1;
     }
     g.quality = quality;
@@ -21995,7 +22048,7 @@ static int generate_metal_graph_raw_swa(
             metal_graph_free(&g);
             return 1;
         }
-        fprintf(stderr, "ds4: wrote GPU prefill logits to %s\n", dump_prefill_logits);
+        ds4_diag( "ds4: wrote GPU prefill logits to %s\n", dump_prefill_logits);
     }
 
     int pos = prompt->len;
@@ -22030,7 +22083,7 @@ static int generate_metal_graph_raw_swa(
         if (!ok) break;
         if (token_timing) {
             const double t_eval1 = now_sec();
-            fprintf(stderr, "ds4: gpu decode eval %d took %.3f ms\n", n_decode_eval + 1, (t_eval1 - t_eval0) * 1000.0);
+            ds4_diag( "ds4: gpu decode eval %d took %.3f ms\n", n_decode_eval + 1, (t_eval1 - t_eval0) * 1000.0);
         }
         n_decode_eval++;
         pos++;
@@ -22162,7 +22215,7 @@ static void ds4_acquire_instance_lock(void) {
 
     const int fd = open(path, O_RDWR | O_CREAT, 0600);
     if (fd < 0) {
-        fprintf(stderr, "ds4: failed to open lock file %s: %s\n", path, strerror(errno));
+        ds4_diag( "ds4: failed to open lock file %s: %s\n", path, strerror(errno));
         exit(2);
     }
     (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
@@ -22178,20 +22231,20 @@ static void ds4_acquire_instance_lock(void) {
                 owner = strtol(buf, &end, 10);
             }
             if (owner > 0) {
-                fprintf(stderr, "ds4: another ds4 process is already running (pid %ld); refusing to start\n", owner);
+                ds4_diag( "ds4: another ds4 process is already running (pid %ld); refusing to start\n", owner);
             } else {
-                fprintf(stderr, "ds4: another ds4 process is already running; refusing to start\n");
+                ds4_diag( "ds4: another ds4 process is already running; refusing to start\n");
             }
             close(fd);
             exit(2);
         }
-        fprintf(stderr, "ds4: failed to lock %s: %s\n", path, strerror(errno));
+        ds4_diag( "ds4: failed to lock %s: %s\n", path, strerror(errno));
         close(fd);
         exit(2);
     }
 
     if (ftruncate(fd, 0) != 0) {
-        fprintf(stderr, "ds4: failed to truncate lock file %s: %s\n", path, strerror(errno));
+        ds4_diag( "ds4: failed to truncate lock file %s: %s\n", path, strerror(errno));
         close(fd);
         exit(2);
     }
@@ -23893,28 +23946,28 @@ static bool imatrix_read_text_file(const char *path, char **out, size_t *len_out
     *len_out = 0;
     struct stat st;
     if (stat(path, &st) != 0) {
-        fprintf(stderr, "ds4: failed to stat imatrix dataset %s: %s\n", path, strerror(errno));
+        ds4_diag( "ds4: failed to stat imatrix dataset %s: %s\n", path, strerror(errno));
         return false;
     }
     if (st.st_size < 0 || (uint64_t)st.st_size > SIZE_MAX - 1) {
-        fprintf(stderr, "ds4: imatrix dataset is too large: %s\n", path);
+        ds4_diag( "ds4: imatrix dataset is too large: %s\n", path);
         return false;
     }
     FILE *fp = fopen(path, "rb");
     if (!fp) {
-        fprintf(stderr, "ds4: failed to open imatrix dataset %s: %s\n", path, strerror(errno));
+        ds4_diag( "ds4: failed to open imatrix dataset %s: %s\n", path, strerror(errno));
         return false;
     }
     size_t n = (size_t)st.st_size;
     char *buf = xmalloc(n + 1);
     if (n != 0 && fread(buf, 1, n, fp) != n) {
-        fprintf(stderr, "ds4: failed to read imatrix dataset %s\n", path);
+        ds4_diag( "ds4: failed to read imatrix dataset %s\n", path);
         fclose(fp);
         free(buf);
         return false;
     }
     if (fclose(fp) != 0) {
-        fprintf(stderr, "ds4: failed to close imatrix dataset %s: %s\n", path, strerror(errno));
+        ds4_diag( "ds4: failed to close imatrix dataset %s: %s\n", path, strerror(errno));
         free(buf);
         return false;
     }
@@ -23945,12 +23998,12 @@ int ds4_engine_collect_imatrix(ds4_engine *e,
     (void)ctx_size;
     (void)max_prompts;
     (void)max_tokens;
-    fprintf(stderr, "ds4: imatrix collection requires a graph backend build\n");
+    ds4_diag( "ds4: imatrix collection requires a graph backend build\n");
     return 1;
 #else
     if (!e || !dataset_path || !output_path) return 1;
     if (e->backend != DS4_BACKEND_METAL || !e->metal_ready) {
-        fprintf(stderr, "ds4: imatrix collection currently requires --metal\n");
+        ds4_diag( "ds4: imatrix collection currently requires --metal\n");
         return 1;
     }
     if (ctx_size <= 0) ctx_size = 32768;
@@ -23969,7 +24022,7 @@ int ds4_engine_collect_imatrix(ds4_engine *e,
     bool ok = metal_graph_alloc_raw_cap(&g, weights, &weights->layer[0],
                                         raw_cap, (uint32_t)ctx_size, prefill_cap, false);
     if (!ok) {
-        fprintf(stderr, "ds4: failed to allocate imatrix Metal graph runtime\n");
+        ds4_diag( "ds4: failed to allocate imatrix Metal graph runtime\n");
         free(dataset);
         return 1;
     }
@@ -23981,13 +24034,13 @@ int ds4_engine_collect_imatrix(ds4_engine *e,
 
     ds4_imatrix_collector collector;
     if (!imatrix_collector_init(&collector, prefill_cap, dataset_path)) {
-        fprintf(stderr, "ds4: failed to allocate imatrix collector\n");
+        ds4_diag( "ds4: failed to allocate imatrix collector\n");
         metal_graph_free(&g);
         free(dataset);
         return 1;
     }
 
-    fprintf(stderr,
+    ds4_diag(
             "ds4: collecting routed-MoE imatrix from %s (model=%s, layers=%u, experts=%u, ctx=%d, chunk=%u)\n",
             dataset_path, DS4_MODEL_SHAPE_NAME, DS4_N_LAYER, DS4_N_EXPERT, ctx_size, prefill_cap);
 
@@ -24019,7 +24072,7 @@ int ds4_engine_collect_imatrix(ds4_engine *e,
             }
             if (prompt.len > 0) {
                 if (!metal_graph_reset_prefill_state(&g)) {
-                    fprintf(stderr, "ds4: failed to reset imatrix graph state\n");
+                    ds4_diag( "ds4: failed to reset imatrix graph state\n");
                     ok = false;
                 } else if ((uint32_t)prompt.len > prefill_cap) {
                     ok = metal_graph_prefill_chunked_range(&g, model, weights,
@@ -24039,7 +24092,7 @@ int ds4_engine_collect_imatrix(ds4_engine *e,
                                                          NULL, NULL);
                 }
                 if (!ok) {
-                    fprintf(stderr, "ds4: imatrix prefill failed at prompt %d\n", prompts_done + 1);
+                    ds4_diag( "ds4: imatrix prefill failed at prompt %d\n", prompts_done + 1);
                     token_vec_free(&prompt);
                     *end = saved;
                     break;
@@ -24047,7 +24100,7 @@ int ds4_engine_collect_imatrix(ds4_engine *e,
                 prompts_done++;
                 tokens_done += prompt.len;
                 if (prompts_done % 10 == 0) {
-                    fprintf(stderr,
+                    ds4_diag(
                             "ds4: imatrix prompts=%d tokens=%d routes=%llu\r",
                             prompts_done,
                             tokens_done,
@@ -24068,7 +24121,7 @@ int ds4_engine_collect_imatrix(ds4_engine *e,
     if (ok) {
         ok = imatrix_collector_save(&collector, weights, output_path);
         if (ok) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: wrote imatrix %s from %d prompts, %d tokens, %llu routed expert observations\n",
                     output_path,
                     prompts_done,
@@ -24101,7 +24154,7 @@ int ds4_engine_generate_argmax(
     if (ds4_backend_uses_graph(e->backend)) {
 #ifndef DS4_NO_GPU
         if (!e->metal_ready) {
-            fprintf(stderr, "ds4: %s generation requested but the graph backend is unavailable\n",
+            ds4_diag( "ds4: %s generation requested but the graph backend is unavailable\n",
                     ds4_backend_name(e->backend));
             return 1;
         }
@@ -24118,7 +24171,7 @@ int ds4_engine_generate_argmax(
                                             emit, done, emit_ud,
                                             progress, progress_ud);
 #else
-        fprintf(stderr, "ds4: %s generation requested but this build has no graph backend support\n",
+        ds4_diag( "ds4: %s generation requested but this build has no graph backend support\n",
                 ds4_backend_name(e->backend));
         return 1;
 #endif
@@ -24135,7 +24188,7 @@ int ds4_engine_generate_argmax(
 int ds4_engine_metal_graph_test(ds4_engine *e, const ds4_tokens *prompt) {
 #ifndef DS4_NO_GPU
     if (!e->metal_ready) {
-        fprintf(stderr, "ds4: %s graph test requested but backend is unavailable\n",
+        ds4_diag( "ds4: %s graph test requested but backend is unavailable\n",
                 ds4_backend_name(e->backend));
         return 1;
     }
@@ -24143,7 +24196,7 @@ int ds4_engine_metal_graph_test(ds4_engine *e, const ds4_tokens *prompt) {
 #else
     (void)e;
     (void)prompt;
-    fprintf(stderr, "ds4: graph test requested but this build has no graph backend support\n");
+    ds4_diag( "ds4: graph test requested but this build has no graph backend support\n");
     return 1;
 #endif
 }
@@ -24151,7 +24204,7 @@ int ds4_engine_metal_graph_test(ds4_engine *e, const ds4_tokens *prompt) {
 int ds4_engine_metal_graph_full_test(ds4_engine *e, const ds4_tokens *prompt) {
 #ifndef DS4_NO_GPU
     if (!e->metal_ready) {
-        fprintf(stderr, "ds4: %s full graph test requested but backend is unavailable\n",
+        ds4_diag( "ds4: %s full graph test requested but backend is unavailable\n",
                 ds4_backend_name(e->backend));
         return 1;
     }
@@ -24159,7 +24212,7 @@ int ds4_engine_metal_graph_full_test(ds4_engine *e, const ds4_tokens *prompt) {
 #else
     (void)e;
     (void)prompt;
-    fprintf(stderr, "ds4: full graph test requested but this build has no graph backend support\n");
+    ds4_diag( "ds4: full graph test requested but this build has no graph backend support\n");
     return 1;
 #endif
 }
@@ -24167,7 +24220,7 @@ int ds4_engine_metal_graph_full_test(ds4_engine *e, const ds4_tokens *prompt) {
 int ds4_engine_metal_graph_prompt_test(ds4_engine *e, const ds4_tokens *prompt, int ctx_size) {
 #ifndef DS4_NO_GPU
     if (!e->metal_ready) {
-        fprintf(stderr, "ds4: %s prompt graph test requested but backend is unavailable\n",
+        ds4_diag( "ds4: %s prompt graph test requested but backend is unavailable\n",
                 ds4_backend_name(e->backend));
         return 1;
     }
@@ -24176,14 +24229,14 @@ int ds4_engine_metal_graph_prompt_test(ds4_engine *e, const ds4_tokens *prompt, 
     (void)e;
     (void)prompt;
     (void)ctx_size;
-    fprintf(stderr, "ds4: prompt graph test requested but this build has no graph backend support\n");
+    ds4_diag( "ds4: prompt graph test requested but this build has no graph backend support\n");
     return 1;
 #endif
 }
 
 int ds4_engine_head_test(ds4_engine *e, const ds4_tokens *prompt) {
     if (!prompt || prompt->len <= 0) {
-        fprintf(stderr, "ds4: head test requires a non-empty prompt\n");
+        ds4_diag( "ds4: head test requires a non-empty prompt\n");
         return 1;
     }
 
@@ -24280,7 +24333,7 @@ int ds4_engine_head_test(ds4_engine *e, const ds4_tokens *prompt) {
 
 int ds4_engine_first_token_test(ds4_engine *e, const ds4_tokens *prompt) {
     if (!prompt || prompt->len <= 0) {
-        fprintf(stderr, "ds4: first-token test requires a non-empty prompt\n");
+        ds4_diag( "ds4: first-token test requires a non-empty prompt\n");
         return 1;
     }
 
@@ -24336,7 +24389,7 @@ static bool ds4_engine_configure_streaming_auto_cache(ds4_engine *e) {
 
     const uint64_t recommended = ds4_gpu_recommended_working_set_size();
     if (recommended == 0) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal SSD streaming auto cache: recommended working set unavailable; "
                 "set --ssd-streaming-cache-experts N or NGB explicitly\n");
         return false;
@@ -24344,14 +24397,14 @@ static bool ds4_engine_configure_streaming_auto_cache(ds4_engine *e) {
 
     uint64_t non_routed_bytes = 0;
     if (!weights_streaming_non_routed_bytes(&e->weights, &non_routed_bytes)) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal SSD streaming auto cache could not measure non-routed model weights\n");
         return false;
     }
 
     uint64_t per_expert_bytes = 0;
     if (!ds4_streaming_routed_expert_bytes(&e->weights, &per_expert_bytes)) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal SSD streaming auto cache could not measure routed expert size\n");
         return false;
     }
@@ -24363,32 +24416,32 @@ static bool ds4_engine_configure_streaming_auto_cache(ds4_engine *e) {
                                  per_expert_bytes,
                                  max_model_experts,
                                  &plan)) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal SSD streaming auto cache could not compute a valid cache budget\n");
         return false;
     }
 
     e->ssd_streaming_cache_experts = plan.cache_experts;
-    fprintf(stderr,
+    ds4_diag(
             "ds4: Metal SSD streaming auto cache budget\n");
-    fprintf(stderr,
+    ds4_diag(
             "ds4:   Metal recommends %.2f GiB working set\n",
             (double)recommended / 1073741824.0);
-    fprintf(stderr,
+    ds4_diag(
             "ds4:   using 80%% total for model + cached experts: %.2f GiB\n",
             (double)plan.model_target_bytes / 1073741824.0);
-    fprintf(stderr,
+    ds4_diag(
             "ds4:   non-routed weights: %.2f GiB\n",
             (double)non_routed_bytes / 1073741824.0);
-    fprintf(stderr,
+    ds4_diag(
             "ds4:   routed expert size: %.2f MiB\n",
             (double)per_expert_bytes / 1048576.0);
-    fprintf(stderr,
+    ds4_diag(
             "ds4:   cached expert count: %u (%.2f GiB)\n",
             e->ssd_streaming_cache_experts,
             (double)plan.effective_cache_bytes / 1073741824.0);
     if (plan.model_target_bytes <= non_routed_bytes) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4:   note: non-routed weights already fill the 80%% target; keeping a one-expert cache\n");
     }
     return true;
@@ -24450,7 +24503,7 @@ static bool ds4_engine_preload_pro_q4_expert_tables(
         const uint64_t down_row_bytes = routed_expert_row_bytes(layer->ffn_down_exps);
         if (layer->ffn_gate_exps->dim[1] > UINT64_MAX / gate_row_bytes ||
             layer->ffn_down_exps->dim[1] > UINT64_MAX / down_row_bytes) {
-            fprintf(stderr, "ds4: PRO Q4 expert table preload byte size overflow at layer %u\n", il);
+            ds4_diag( "ds4: PRO Q4 expert table preload byte size overflow at layer %u\n", il);
             return false;
         }
         const uint64_t gate_expert_bytes = layer->ffn_gate_exps->dim[1] * gate_row_bytes;
@@ -24464,7 +24517,7 @@ static bool ds4_engine_preload_pro_q4_expert_tables(
                                               gate_expert_bytes,
                                               down_expert_bytes,
                                               DS4_N_EXPERT)) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: Metal failed to preload PRO Q4 expert tables for layer %u\n",
                     il);
             return false;
@@ -24473,7 +24526,7 @@ static bool ds4_engine_preload_pro_q4_expert_tables(
     }
 
     if (any) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal preloaded PRO Q4 expert tables for layers %u:%u in %.2fs\n",
                 start,
                 end,
@@ -24504,7 +24557,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     if ((opt->directional_steering_attn != 0.0f || opt->directional_steering_ffn != 0.0f) &&
         (!opt->directional_steering_file || !opt->directional_steering_file[0]))
     {
-        fprintf(stderr, "ds4: directional steering needs --dir-steering-file\n");
+        ds4_diag( "ds4: directional steering needs --dir-steering-file\n");
         free(e);
         *out = NULL;
         return 1;
@@ -24547,7 +24600,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     if (!opt->inspect_only) vocab_load(&e->vocab, &e->model);
     config_validate_model(&e->model);
     if (e->ssd_streaming && e->backend != DS4_BACKEND_METAL) {
-        fprintf(stderr, "ds4: --ssd-streaming is currently supported only with --metal\n");
+        ds4_diag( "ds4: --ssd-streaming is currently supported only with --metal\n");
         ds4_engine_close(e);
         *out = NULL;
         return 1;
@@ -24562,7 +24615,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         if (e->backend == DS4_BACKEND_METAL) {
             ds4_expert_profile_init(expert_profile_path, expert_hotlist_path);
         } else {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: expert profile/hotlist is Metal-only for now; ignoring for %s backend\n",
                     ds4_backend_name(e->backend));
         }
@@ -24581,7 +24634,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         if (safe_cache_bytes != 0 &&
             e->ssd_streaming_cache_bytes > safe_cache_bytes) {
             e->ssd_streaming_cache_bytes = safe_cache_bytes;
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: Metal SSD streaming cache budget %.2f GiB capped to %.2f GiB "
                     "to keep expert buffers lockable\n",
                     (double)requested_cache_bytes / 1073741824.0,
@@ -24594,14 +24647,14 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                     e->ssd_streaming_cache_bytes,
                     &per_expert_bytes);
         if (budget == 0 || per_expert_bytes == 0) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: --ssd-streaming-cache-experts byte budget is too small or invalid for this model\n");
             ds4_engine_close(e);
             *out = NULL;
             return 1;
         }
         e->ssd_streaming_cache_experts = budget;
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: Metal SSD streaming cache budget %.2f GiB / %.2f MiB per expert = %u experts\n",
                 (double)e->ssd_streaming_cache_bytes / 1073741824.0,
                 (double)per_expert_bytes / 1048576.0,
@@ -24619,7 +24672,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     if (opt->mtp_path && opt->mtp_path[0] &&
         opt->distributed.role == DS4_DISTRIBUTED_NONE) {
         if (e->ssd_streaming) {
-            fprintf(stderr, "ds4: --ssd-streaming is not compatible with --mtp yet\n");
+            ds4_diag( "ds4: --ssd-streaming is not compatible with --mtp yet\n");
             ds4_engine_close(e);
             *out = NULL;
             return 1;
@@ -24627,7 +24680,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         model_open(&e->mtp_model, opt->mtp_path, graph_backend, true);
         mtp_weights_bind(&e->mtp_weights, &e->mtp_model);
         e->mtp_ready = true;
-        fprintf(stderr, "ds4: MTP support model loaded: %s (draft=%d)\n",
+        ds4_diag( "ds4: MTP support model loaded: %s (draft=%d)\n",
                 opt->mtp_path,
                 e->mtp_draft_tokens);
     }
@@ -24635,7 +24688,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
 #ifndef DS4_NO_GPU
     if (e->backend == DS4_BACKEND_CUDA) {
 #ifdef __APPLE__
-        fprintf(stderr, "ds4: CUDA backend requested but this build is linked with Metal, not CUDA\n");
+        ds4_diag( "ds4: CUDA backend requested but this build is linked with Metal, not CUDA\n");
         ds4_engine_close(e);
         *out = NULL;
         return 1;
@@ -24643,7 +24696,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     }
     if (e->backend == DS4_BACKEND_METAL) {
 #ifndef __APPLE__
-        fprintf(stderr, "ds4: Metal backend requested but this build is linked with CUDA, not Metal\n");
+        ds4_diag( "ds4: Metal backend requested but this build is linked with CUDA, not Metal\n");
         ds4_engine_close(e);
         *out = NULL;
         return 1;
@@ -24652,7 +24705,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
     if (graph_backend) {
         e->metal_ready = ds4_gpu_init() != 0;
         if (!e->metal_ready) {
-            fprintf(stderr, "ds4: %s backend unavailable; aborting startup\n",
+            ds4_diag( "ds4: %s backend unavailable; aborting startup\n",
                     ds4_backend_name(e->backend));
             ds4_engine_close(e);
             *out = NULL;
@@ -24690,7 +24743,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                 spans_ok = weights_model_map_token_spans(&e->weights, &spans);
             }
             if (!spans_ok) {
-                fprintf(stderr, "ds4: invalid SSD streaming initial token embedding map\n");
+                ds4_diag( "ds4: invalid SSD streaming initial token embedding map\n");
                 ds4_engine_close(e);
                 *out = NULL;
                 return 1;
@@ -24715,7 +24768,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                 } else {
                     snprintf(load_end, sizeof(load_end), "%u", load_layer_end);
                 }
-                fprintf(stderr,
+                ds4_diag(
                         "ds4: SSD streaming initial %s model map restricted to token + non-routed layers %u:%s (%u spans, %.2f GiB tensor span)\n",
                         ds4_backend_name(e->backend),
                         load_layer_start,
@@ -24723,7 +24776,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                         spans.len,
                         (double)span_bytes / 1073741824.0);
             } else {
-                fprintf(stderr,
+                ds4_diag(
                         "ds4: SSD streaming initial %s model map restricted to token embedding (%u spans, %.2f GiB tensor span)\n",
                         ds4_backend_name(e->backend),
                         spans.len,
@@ -24756,7 +24809,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                                          map_output,
                                          &spans))
             {
-                fprintf(stderr, "ds4: invalid model load layer slice %u:%s\n",
+                ds4_diag( "ds4: invalid model load layer slice %u:%s\n",
                         load_layer_start,
                         load_end);
                 ds4_engine_close(e);
@@ -24774,7 +24827,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             load_offsets = offsets;
             load_sizes = sizes;
             load_span_count = spans.len;
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: restricting %s model map to layers %u:%s (%u spans, %.2f GiB tensor span)\n",
                     ds4_backend_name(e->backend),
                     load_layer_start,
@@ -24796,7 +24849,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                                                        e->model.max_tensor_bytes);
         }
         if (!model_map_ok) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: %s failed to map model views; aborting startup. "
                     "This is commonly caused by insufficient memory or accelerator VM budget.\n",
                     ds4_backend_name(e->backend));
@@ -24813,7 +24866,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
                                            e->mtp_model.size - e->mtp_model.tensor_data_pos,
                                            e->mtp_model.max_tensor_bytes))
         {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: %s failed to map MTP model views; aborting startup. "
                     "This is commonly caused by insufficient memory or accelerator VM budget.\n",
                     ds4_backend_name(e->backend));
@@ -24837,7 +24890,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
         if (!accelerator_cache_model_tensors(e->backend, &e->model,
                                              load_offsets, load_sizes,
                                              load_span_count)) {
-            fprintf(stderr, "ds4: %s failed to prepare optional model cache\n",
+            ds4_diag( "ds4: %s failed to prepare optional model cache\n",
                     ds4_backend_name(e->backend));
             free(load_offsets);
             free(load_sizes);
@@ -24853,7 +24906,7 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             (void)ds4_gpu_set_model_fd_for_map(e->mtp_model.fd, e->mtp_model.map);
             if (!accelerator_cache_model_tensors(e->backend, &e->mtp_model,
                                                  NULL, NULL, 0)) {
-                fprintf(stderr, "ds4: %s failed to prepare optional MTP model cache\n",
+                ds4_diag( "ds4: %s failed to prepare optional MTP model cache\n",
                         ds4_backend_name(e->backend));
                 ds4_engine_close(e);
                 *out = NULL;
@@ -24861,12 +24914,12 @@ int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt) {
             }
             (void)ds4_gpu_set_model_fd_for_map(e->model.fd, e->model.map);
         }
-        fprintf(stderr, "ds4: %s backend initialized for graph diagnostics\n",
+        ds4_diag( "ds4: %s backend initialized for graph diagnostics\n",
                 ds4_backend_name(e->backend));
     }
 #else
     if (graph_backend) {
-        fprintf(stderr, "ds4: %s backend requested but this build has no graph backend support; aborting startup\n",
+        ds4_diag( "ds4: %s backend requested but this build has no graph backend support; aborting startup\n",
                 ds4_backend_name(e->backend));
         ds4_engine_close(e);
         *out = NULL;
@@ -24944,7 +24997,7 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
     if (!out || !e || ctx_size <= 0) return 1;
     if (e->backend == DS4_BACKEND_CPU) {
         if (e->distributed.role == DS4_DISTRIBUTED_COORDINATOR) {
-            fprintf(stderr, "ds4: distributed coordinator sessions require the graph backend\n");
+            ds4_diag( "ds4: distributed coordinator sessions require the graph backend\n");
             return 1;
         }
         ds4_session *s = xcalloc(1, sizeof(*s));
@@ -24971,7 +25024,7 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
     const uint32_t raw_cap = metal_graph_raw_cap_for_context(ctx_size, s->prefill_cap);
     const ds4_layer_weights *shape_layer = weights_first_bound_layer(&e->weights);
     if (!shape_layer) {
-        fprintf(stderr, "ds4: no transformer layers are loaded\n");
+        ds4_diag( "ds4: no transformer layers are loaded\n");
         free(s);
         return 1;
     }
@@ -25008,7 +25061,7 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
                                     ctx_size,
                                     err,
                                     sizeof(err)) != 0) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: failed to create distributed coordinator session: %s\n",
                     err[0] ? err : "unknown error");
             metal_graph_free(&s->graph);
@@ -25167,7 +25220,7 @@ int ds4_session_eval_output_head_from_hc(ds4_session *s,
                                      (uint64_t)DS4_N_VOCAB * sizeof(float)) != 0;
     if (!ok) {
         if (ds4_gpu_synchronize() == 0) {
-            fprintf(stderr, "ds4: synchronize after output-head hidden-state failure also failed\n");
+            ds4_diag( "ds4: synchronize after output-head hidden-state failure also failed\n");
         }
         if (errlen) snprintf(err, errlen, "%s output-head hidden-state evaluation failed",
                              ds4_backend_name(e->backend));
@@ -25338,7 +25391,7 @@ int ds4_session_eval_layer_slice(ds4_session *s,
         }
         if (!ok) {
             if (ds4_gpu_synchronize() == 0) {
-                fprintf(stderr, "ds4: synchronize after layer-slice full failure also failed\n");
+                ds4_diag( "ds4: synchronize after layer-slice full failure also failed\n");
             }
             if (errlen) snprintf(err, errlen, "%s layer-slice full evaluation failed",
                                  ds4_backend_name(e->backend));
@@ -25414,7 +25467,7 @@ int ds4_session_eval_layer_slice(ds4_session *s,
         }
         if (!ok) {
             if (ds4_gpu_synchronize() == 0) {
-                fprintf(stderr, "ds4: synchronize after layer-slice decode failure also failed\n");
+                ds4_diag( "ds4: synchronize after layer-slice decode failure also failed\n");
             }
             if (errlen) snprintf(err, errlen, "%s layer-slice decode failed",
                                  ds4_backend_name(e->backend));
@@ -25479,7 +25532,7 @@ int ds4_session_eval_layer_slice(ds4_session *s,
     }
     if (!ok) {
         if (ds4_gpu_synchronize() == 0) {
-            fprintf(stderr, "ds4: synchronize after layer-slice failure also failed\n");
+            ds4_diag( "ds4: synchronize after layer-slice failure also failed\n");
         }
         if (errlen) snprintf(err, errlen, "%s layer-slice failed",
                              ds4_backend_name(e->backend));
@@ -25946,7 +25999,7 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
         if (mtp_probe_log) {
             s->mtp_probe_total++;
             if (s->mtp_draft_token == token) s->mtp_probe_hit++;
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: mtp probe token=%d draft=%d hit=%llu/%llu\n",
                     token,
                     s->mtp_draft_token,
@@ -25979,7 +26032,7 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
             s->mtp_draft_token = mtp_top >= 0 ? mtp_top : sample_argmax(s->mtp_logits, DS4_N_VOCAB);
             s->mtp_draft_valid = true;
         } else if (getenv("DS4_MTP_PROBE")) {
-            fprintf(stderr, "ds4: mtp probe draft failed\n");
+            ds4_diag( "ds4: mtp probe draft failed\n");
         }
     }
     return 0;
@@ -26076,7 +26129,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
      */
     if (sample_argmax(s->logits, DS4_N_VOCAB) != drafts[0]) {
         if (getenv("DS4_MTP_SPEC_LOG")) {
-            fprintf(stderr, "ds4: mtp spec miss first draft=%d\n", drafts[0]);
+            ds4_diag( "ds4: mtp spec miss first draft=%d\n", drafts[0]);
         }
         return n_accept;
     }
@@ -26156,7 +26209,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
             DS4_MTP_KEEP_ACCEPTED(1);
             if (mtp_timing) {
                 const double done = now_sec();
-                fprintf(stderr,
+                ds4_diag(
                         "ds4: mtp timing margin-skip drafted=2 committed=1 margin=%.3f threshold=%.3f draft=%.3f ms verify=%.3f ms total=%.3f ms\n",
                         mtp_last_margin,
                         mtp_margin_threshold,
@@ -26211,7 +26264,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
             s->mtp_draft_valid = false;
             DS4_MTP_KEEP_ACCEPTED(2);
             if (mtp_timing) {
-                fprintf(stderr,
+                ds4_diag(
                         "ds4: mtp timing decode2 drafted=2 committed=2 draft=%.3f ms snapshot=%.3f ms verify=%.3f ms total=%.3f ms\n",
                         (mtp_t_after_draft - mtp_t0) * 1000.0,
                         (snapshot_done - snapshot_t0) * 1000.0,
@@ -26237,7 +26290,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
             DS4_MTP_KEEP_ACCEPTED(1);
             if (mtp_timing) {
                 const double replay_done = now_sec();
-                fprintf(stderr,
+                ds4_diag(
                         "ds4: mtp timing decode2 drafted=2 committed=1 draft=%.3f ms snapshot=%.3f ms verify=%.3f ms prefix=%.3f ms total=%.3f ms\n",
                         (mtp_t_after_draft - mtp_t0) * 1000.0,
                         (snapshot_done - snapshot_t0) * 1000.0,
@@ -26258,7 +26311,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
         free(row0_logits);
         free(row_logits);
         if (getenv("DS4_MTP_SPEC_LOG")) {
-            fprintf(stderr, "ds4: mtp decode2 verifier failed, falling back to sequential\n");
+            ds4_diag( "ds4: mtp decode2 verifier failed, falling back to sequential\n");
         }
     }
 
@@ -26314,7 +26367,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                 commit_drafts++;
             }
             if (mtp_conf_log) {
-                fprintf(stderr,
+                ds4_diag(
                         "ds4: mtp conf drafted=%d committed=%d mtp_top=%d runner=%d margin=%.6f target_next=%d draft_next=%d\n",
                         draft_n,
                         commit_drafts,
@@ -26369,7 +26422,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                     s->mtp_draft_valid = false;
                     DS4_MTP_KEEP_ACCEPTED(draft_n);
                     if (mtp_timing) {
-                        fprintf(stderr,
+                        ds4_diag(
                                 "ds4: mtp timing micro drafted=%d committed=%d draft=%.3f ms snapshot=%.3f ms verify=%.3f ms total=%.3f ms\n",
                                 draft_n,
                                 draft_n,
@@ -26399,7 +26452,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                     DS4_MTP_KEEP_ACCEPTED(1);
                     token_vec_push(&s->checkpoint, drafts[0]);
                     if (mtp_timing) {
-                        fprintf(stderr,
+                        ds4_diag(
                                 "ds4: mtp timing micro drafted=%d committed=%d draft=%.3f ms snapshot=%.3f ms verify=%.3f ms prefix=%.3f ms total=%.3f ms noreplay=1\n",
                                 draft_n,
                                 commit_drafts,
@@ -26434,7 +26487,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                     token_vec_push(&s->checkpoint, drafts[0]);
                     if (mtp_timing) {
                         const double replay_done = now_sec();
-                        fprintf(stderr,
+                        ds4_diag(
                                 "ds4: mtp timing micro drafted=%d committed=%d draft=%.3f ms snapshot=%.3f ms verify=%.3f ms exact_replay=%.3f ms total=%.3f ms\n",
                                 draft_n,
                                 commit_drafts,
@@ -26475,7 +26528,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                     DS4_MTP_KEEP_ACCEPTED(commit_drafts);
                     if (mtp_timing) {
                         const double replay_done = now_sec();
-                        fprintf(stderr,
+                        ds4_diag(
                                 "ds4: mtp timing micro drafted=%d committed=%d draft=%.3f ms snapshot=%.3f ms verify=%.3f ms replay=%.3f ms total=%.3f ms\n",
                                 draft_n,
                                 commit_drafts,
@@ -26511,7 +26564,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
         free(row_logits);
         free(row_tops);
         if (getenv("DS4_MTP_SPEC_LOG")) {
-            fprintf(stderr, "ds4: mtp spec micro verifier failed, falling back to sequential\n");
+            ds4_diag( "ds4: mtp spec micro verifier failed, falling back to sequential\n");
         }
     }
 
@@ -26528,7 +26581,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
     for (int i = 0; i < draft_n && n_accept < accepted_cap; i++) {
         if (target_top != drafts[i]) {
             if (getenv("DS4_MTP_SPEC_LOG")) {
-                fprintf(stderr,
+                ds4_diag(
                         "ds4: mtp spec seq miss at=%d draft=%d base=%d drafted=%d accepted=%d\n",
                         i,
                         drafts[i],
@@ -26572,7 +26625,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
     DS4_MTP_KEEP_ACCEPTED(verified);
 #undef DS4_MTP_KEEP_ACCEPTED
     if (mtp_timing) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: mtp timing seq drafted=%d verified=%d draft=%.3f ms verify=%.3f ms total=%.3f ms\n",
                 draft_n,
                 verified,
@@ -26582,12 +26635,12 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
     }
     if (getenv("DS4_MTP_SPEC_LOG")) {
         if (verified == draft_n) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: mtp spec seq accept drafted=%d accepted=%d\n",
                     draft_n,
                     n_accept);
         } else {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: mtp spec seq partial drafted=%d verified=%d accepted=%d\n",
                     draft_n,
                     verified,

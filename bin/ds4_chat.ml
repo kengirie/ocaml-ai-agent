@@ -12,8 +12,6 @@ module Model = Deepseek_cmd.Model
 
 let model_dir = Model.dir
 
-(* Run [f], turning any raised error into a clean CLI message (Cmd.eval_result
-   prints it and exits nonzero) instead of an "internal error" backtrace. *)
 let guard f =
   try Ok (f ()) with
   | Failure msg -> Error msg
@@ -138,6 +136,17 @@ let list () =
 
 open Cmdliner
 
+let log =
+  let setup style_renderer level =
+    Fmt_tty.setup_std_outputs ?style_renderer ();
+    Logs.set_level level;
+    Logs.set_reporter (Logs_fmt.reporter ());
+    Logs_threaded.enable ();
+    Ds4.forward_logs ()
+  in
+  Term.(const setup $ Fmt_cli.style_renderer () $ Logs_cli.level ())
+
+let with_log t = Term.(const (fun () v -> v) $ log $ t)
 let model = Model.arg
 
 let system =
@@ -175,9 +184,10 @@ let prompt =
 
 let chat_cmd =
   let term =
-    Term.(
-      const chat $ model $ system $ think $ max_tokens $ temperature $ seed
-      $ prompt)
+    with_log
+      Term.(
+        const chat $ model $ system $ think $ max_tokens $ temperature $ seed
+        $ prompt)
   in
   Cmd.v (Cmd.info "chat" ~doc:"Single prompt/response.") term
 

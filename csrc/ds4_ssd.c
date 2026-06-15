@@ -112,7 +112,7 @@ bool ds4_ssd_memory_lock_acquire(ds4_ssd_memory_lock *lock,
     lock->bytes = 0;
     if (bytes == 0) return true;
     if (bytes > (uint64_t)SIZE_MAX) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: --simulate-used-memory is too large for this process\n");
         return false;
     }
@@ -124,7 +124,7 @@ bool ds4_ssd_memory_lock_acquire(ds4_ssd_memory_lock *lock,
                      -1,
                      0);
     if (ptr == MAP_FAILED) {
-        fprintf(stderr,
+        ds4_diag(
                 "ds4: --simulate-used-memory mmap %.2f GiB failed: %s\n",
                 (double)bytes / (double)DS4_GIB,
                 strerror(errno));
@@ -152,7 +152,7 @@ bool ds4_ssd_memory_lock_acquire(ds4_ssd_memory_lock *lock,
         if (len != 0) p[off + len - 1u] = 1;
 
         if (mlock((void *)(p + off), (size_t)len) != 0) {
-            fprintf(stderr,
+            ds4_diag(
                     "ds4: --simulate-used-memory mlock failed after %.2f/%.2f GiB: %s\n",
                     (double)locked / (double)DS4_GIB,
                     (double)bytes / (double)DS4_GIB,
@@ -166,7 +166,7 @@ bool ds4_ssd_memory_lock_acquire(ds4_ssd_memory_lock *lock,
 
     lock->ptr = ptr;
     lock->bytes = bytes;
-    fprintf(stderr,
+    ds4_diag(
             "ds4: simulated used memory: locked %.2f GiB before model load\n",
             (double)bytes / (double)DS4_GIB);
     return true;

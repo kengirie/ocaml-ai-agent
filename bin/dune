@@ -16,5 +16,12 @@
   eio
   eio_main
   cmdliner
+  logs
+  logs.cli
+  logs.fmt
+  logs.threaded
+  fmt
+  fmt.cli
+  fmt.tty
   xdge
   unix))

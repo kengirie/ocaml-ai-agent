@@ -33,4 +33,9 @@ bool ds4_ssd_memory_lock_acquire(ds4_ssd_memory_lock *lock,
                                  uint64_t             bytes);
 void ds4_ssd_memory_lock_release(ds4_ssd_memory_lock *lock);
 
+/* Routed diagnostic primitive.  Declared here, the base layer, so files that do
+ * not pull in ds4.h (e.g. ds4_ssd.c) can still report through the sink; ds4.h
+ * documents the sink and re-declares this identically. */
+void ds4_diag(const char *fmt, ...);
+
 #endif

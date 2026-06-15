@@ -1,14 +1,9 @@
-(** Command-line plumbing shared by the DeepSeek binaries and tests. *)
+(** Cmdliner plumbing to expose DeepSeek config. *)
 
 (** Choosing and locating a DeepSeek-V4 model.
 
     Models are distributed as one or more GGUF files under named download
-    targets, each with short aliases. This module owns that catalogue and the
-    policy for picking a model to load: an explicit choice — a target name, an
-    alias, or a path — wins; otherwise the [DS4_MODEL] environment variable;
-    otherwise the first model in the data directory. {!Model.resolve} is the
-    policy as a function, and {!Model.arg} / {!Model.term} / {!Model.target_arg}
-    expose it to Cmdliner. *)
+    targets, each with short aliases. *)
 module Model : sig
   type t = {
     name : string;  (** canonical target name *)

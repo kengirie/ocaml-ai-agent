@@ -15,6 +15,26 @@ val backend : [ `Metal | `Cuda | `Cpu ]
 (** The inference backend compiled into this build, fixed at link time by the
     chosen implementation library. *)
 
+val log_src : Logs.src
+(** The {!Logs} source under which the C engine's diagnostics are reported once
+    {!forward_logs} has been called. Named [deepseek.engine], so a
+    [Logs_cli]-driven CLI can control its verbosity independently. *)
+
+val forward_logs : unit -> unit
+(** [forward_logs ()] routes the inference engine's internal diagnostics —
+    historically written straight to [stderr] — into {!Logs} under {!log_src}.
+    Errors and warnings map to [Logs.Error]/[Logs.Warning]; everything else
+    (prefill, generation, KV-cache and timing traces) maps to [Logs.Debug], so
+    they surface only under [-v -v] / debug verbosity.
+
+    It reads the current {!Logs} level and pushes it down to the C sink, which
+    drops sub-threshold messages before they cross into OCaml — so the debug
+    firehose costs nothing until debug logging is actually enabled. Installing
+    the handler is idempotent; call it again after changing the {!Logs} level to
+    refresh the threshold. Wire it up after configuring {!Logs} (typically via
+    [Logs_cli]); engine diagnostics emitted before the call still go to
+    [stderr]. *)
+
 type think = [ `None | `High | `Max ]
 (** Reasoning effort encoded into the chat prompt. *)
 

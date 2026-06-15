@@ -42,6 +42,16 @@ external c_session_sample : raw_session -> float -> float -> float -> int
 external c_session_eval : raw_session -> int -> unit = "caml_ds4_session_eval"
 external c_token_text : raw_engine -> int -> string = "caml_ds4_token_text"
 
+(* Diagnostic forwarding (csrc/ds4_stubs.c). The C engine historically wrote its
+   diagnostics straight to stderr; [c_set_log_handler] installs a callback that
+   receives [(level, message)] for each, where [level] is 0=Error 1=Warning
+   2=Info 3=Debug. [c_set_log_min_level] mirrors the active Logs threshold into
+   the C sink so sub-threshold messages are dropped before crossing the FFI. *)
+external c_set_log_handler : (int -> string -> unit) -> unit
+  = "caml_ds4_set_log_handler"
+
+external c_set_log_min_level : int -> unit = "caml_ds4_set_log_min_level"
+
 (* An engine and its (optional) dedicated worker domain. When [worker] is set, a
    single domain owns every C call into the engine: [run] hands the work to that
    domain and blocks only the calling fiber, so the main domain stays free to
@@ -106,6 +116,48 @@ let backend = Backend.which
    Cpu=2. Kept here, at the C boundary, so the [Backend] interface stays a plain
    variant rather than a magic integer. *)
 let backend_id = match backend with `Metal -> 0 | `Cuda -> 1 | `Cpu -> 2
+
+(* Diagnostic forwarding into Logs. The C engine reports through [log_src]; its
+   internal traces (prefill, generation, KV-cache, timing) are debug-level,
+   while warnings and errors keep their severity. *)
+let log_src =
+  Logs.Src.create "deepseek.engine"
+    ~doc:"DeepSeek-V4 C inference engine diagnostics"
+
+(* C level int (see ds4_stubs.c) -> Logs level. *)
+let logs_level_of_int = function
+  | 0 -> Logs.Error
+  | 1 -> Logs.Warning
+  | 2 -> Logs.Info
+  | _ -> Logs.Debug
+
+(* Logs threshold -> C level int the sink drops below (-1 drops everything). The
+   source's own level takes precedence over the global one when set. *)
+let c_min_level_of_logs () =
+  let lvl =
+    match Logs.Src.level log_src with Some _ as l -> l | None -> Logs.level ()
+  in
+  match lvl with
+  | None -> -1
+  | Some Logs.App | Some Logs.Error -> 0
+  | Some Logs.Warning -> 1
+  | Some Logs.Info -> 2
+  | Some Logs.Debug -> 3
+
+let forwarding = ref false
+
+let forward_logs () =
+  c_set_log_min_level (c_min_level_of_logs ());
+  if not !forwarding then begin
+    c_set_log_handler (fun level msg ->
+        (* The engine terminates messages with '\n'; Logs adds its own break. *)
+        let msg =
+          let n = String.length msg in
+          if n > 0 && msg.[n - 1] = '\n' then String.sub msg 0 (n - 1) else msg
+        in
+        Logs.msg ~src:log_src (logs_level_of_int level) (fun m -> m "%s" msg));
+    forwarding := true
+  end
 
 let create ?domain_mgr ?sw ~cache ~model () =
   (* Shader I/O and path resolution use the calling domain's filesystem
