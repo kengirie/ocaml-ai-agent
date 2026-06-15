@@ -1,3 +1,8 @@
+(*---------------------------------------------------------------------------
+   Copyright (c) 2026 Anil Madhavapeddy. All rights reserved.
+   SPDX-License-Identifier: ISC
+  ---------------------------------------------------------------------------*)
+
 (* A typed tool: a Dsml invoke codec (schema + decoder) plus a handler over the
    decoded OCaml value. The codec hides the JSON layer from the handler. *)
 

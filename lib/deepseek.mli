@@ -1,3 +1,8 @@
+(*---------------------------------------------------------------------------
+   Copyright (c) 2026 Anil Madhavapeddy. All rights reserved.
+   SPDX-License-Identifier: ISC
+  ---------------------------------------------------------------------------*)
+
 (** Run DeepSeek-V4 locally, and build agents on top of it.
 
     This library wraps the vendored DeepSeek-V4 Flash/Pro inference engine and

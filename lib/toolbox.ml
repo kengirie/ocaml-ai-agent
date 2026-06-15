@@ -1,3 +1,8 @@
+(*---------------------------------------------------------------------------
+   Copyright (c) 2026 Anil Madhavapeddy. All rights reserved.
+   SPDX-License-Identifier: ISC
+  ---------------------------------------------------------------------------*)
+
 (* Ready-made tools. Each closes over an Eio capability (a directory, the
    process manager, or the network), so its reach is exactly what the caller
    granted. *)

@@ -1,3 +1,8 @@
+(*---------------------------------------------------------------------------
+   Copyright (c) 2026 Anil Madhavapeddy. All rights reserved.
+   SPDX-License-Identifier: ISC
+  ---------------------------------------------------------------------------*)
+
 (** Deepseek v4 inference engine.
 
     Single prompt/response: open a GGUF model, encode a chat prompt, and stream

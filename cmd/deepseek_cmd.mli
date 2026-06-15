@@ -1,3 +1,8 @@
+(*---------------------------------------------------------------------------
+   Copyright (c) 2026 Anil Madhavapeddy. All rights reserved.
+   SPDX-License-Identifier: ISC
+  ---------------------------------------------------------------------------*)
+
 (** Cmdliner plumbing to expose DeepSeek config. *)
 
 (** Choosing and locating a DeepSeek-V4 model.

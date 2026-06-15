@@ -1,3 +1,8 @@
+(*---------------------------------------------------------------------------
+   Copyright (c) 2026 Anil Madhavapeddy. All rights reserved.
+   SPDX-License-Identifier: ISC
+  ---------------------------------------------------------------------------*)
+
 (* Live integration check with the real DeepSeek-V4 engine driving the agent loop,
    and the tools' I/O mocked. *)
 

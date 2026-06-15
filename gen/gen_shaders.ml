@@ -1,3 +1,8 @@
+(*---------------------------------------------------------------------------
+   Copyright (c) 2026 Anil Madhavapeddy. All rights reserved.
+   SPDX-License-Identifier: ISC
+  ---------------------------------------------------------------------------*)
+
 (* Embeds the Metal kernel sources into an OCaml module.
    Invoked by the build as: gen_shaders.exe a.metal b.metal ... > shaders.ml
 

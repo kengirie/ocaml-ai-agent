@@ -1,3 +1,8 @@
+(*---------------------------------------------------------------------------
+   Copyright (c) 2026 Anil Madhavapeddy. All rights reserved.
+   SPDX-License-Identifier: ISC
+  ---------------------------------------------------------------------------*)
+
 (* humpty: a single CLI over the DS4 inference engine that doubles as a guided
    tour of how a language-model agent is assembled.
 

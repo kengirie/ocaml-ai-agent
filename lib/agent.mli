@@ -1,3 +1,8 @@
+(*---------------------------------------------------------------------------
+   Copyright (c) 2026 Anil Madhavapeddy. All rights reserved.
+   SPDX-License-Identifier: ISC
+  ---------------------------------------------------------------------------*)
+
 (** A tool-using agent loop over the DeepSeek-V4 engine.
 
     An agent holds a conversation (a list of {!Dsml.message}s) together with a

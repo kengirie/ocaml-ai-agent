@@ -1,3 +1,8 @@
+(*---------------------------------------------------------------------------
+   Copyright (c) 2026 Anil Madhavapeddy. All rights reserved.
+   SPDX-License-Identifier: ISC
+  ---------------------------------------------------------------------------*)
+
 (* A minimal tool-using agent loop over the DeepSeek-V4 engine.
 
    The shape mirrors the reference C agent (ds4_agent.c). Two libraries do the

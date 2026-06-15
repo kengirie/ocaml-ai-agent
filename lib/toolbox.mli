@@ -1,3 +1,8 @@
+(*---------------------------------------------------------------------------
+   Copyright (c) 2026 Anil Madhavapeddy. All rights reserved.
+   SPDX-License-Identifier: ISC
+  ---------------------------------------------------------------------------*)
+
 (** A set of ready-made {!Tool.t} values, following Eio's capability model so
     that each tool can reach only what it is handed. *)
 
