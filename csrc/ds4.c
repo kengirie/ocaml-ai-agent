@@ -1261,6 +1261,12 @@ static const char *ds4_log_color_code(ds4_log_type type) {
 }
 
 bool ds4_log_is_tty(FILE *fp) {
+    /* A host log sink (ds4_set_log_callback) owns stderr/stdout, so TTY-style
+     * inline output — colour codes and the begin/".."/"done" progress bars —
+     * is suppressed for them even when the fd is a real terminal; ds4_diag and
+     * ds4_log still deliver their messages through the sink.  This keeps the
+     * engine from writing raw bytes around a host that owns the console. */
+    if (g_ds4_log_fn && (fp == stderr || fp == stdout)) return false;
     int fd = fileno(fp);
     return fd >= 0 && isatty(fd) != 0;
 }

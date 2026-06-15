@@ -54,10 +54,8 @@ let chat model_opt system think max_tokens temperature seed prompt =
   let cache = Xdge.cache_dir xdg in
   let model = Eio.Path.(fs / model_path) in
   let engine = V4.create ~cache ~model () in
-  Eio.Flow.copy_string
-    (Printf.sprintf "model: %s  (vocab %d)\n\n" (V4.model_name engine)
-       (V4.vocab_size engine))
-    stdout;
+  Logs.info (fun m ->
+      m "model: %s (vocab %d)" (V4.model_name engine) (V4.vocab_size engine));
   V4.generate engine ~system ~think ~max_tokens ~temperature
     ~seed:(resolve_seed seed)
     ~on_token:(fun s -> Eio.Flow.copy_string s stdout)
