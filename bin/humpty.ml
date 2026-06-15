@@ -22,12 +22,17 @@ let guard f =
   | Failure msg -> Error msg
   | e -> Error (Printexc.to_string e)
 
+(* Every subcommand runs the same prelude: report failures through [guard], open
+   an Eio main loop, and resolve the ds4 XDG layout. Share it. *)
+let run f =
+  guard @@ fun () ->
+  Eio_main.run @@ fun env -> f env (Xdge.create (Eio.Stdenv.fs env) "ds4")
+
 (* The model catalogue and the --model resolution policy live in
    {!Deepseek_cmd.Model}; surface its errors through [guard]. *)
 let resolve_model ~xdg model_opt =
-  match Model.resolve ~dir:(Model.dir xdg) model_opt with
-  | Ok path -> path
-  | Error e -> failwith e
+  Result.fold ~ok:Fun.id ~error:failwith
+    (Model.resolve ~dir:(Model.dir xdg) model_opt)
 
 (* ---- chat -------------------------------------------------------------- *)
 
@@ -42,10 +47,8 @@ let resolve_seed = function
   | n -> Int64.of_int n
 
 let chat model_opt system think max_tokens temperature seed prompt =
-  guard @@ fun () ->
-  Eio_main.run @@ fun env ->
+  run @@ fun env xdg ->
   let fs = Eio.Stdenv.fs env in
-  let xdg = Xdge.create fs "ds4" in
   let model_path = resolve_model ~xdg model_opt in
   let stdout = Eio.Stdenv.stdout env in
   let cache = Xdge.cache_dir xdg in
@@ -64,17 +67,12 @@ let chat model_opt system think max_tokens temperature seed prompt =
 (* ---- download ---------------------------------------------------------- *)
 
 let download (m : Model.t) token_opt =
-  guard @@ fun () ->
-  Eio_main.run @@ fun env ->
-  let fs = Eio.Stdenv.fs env in
-  let xdg = Xdge.create fs "ds4" in
+  run @@ fun env xdg ->
   let proc = Eio.Stdenv.process_mgr env in
   let dir = model_dir xdg in
-  Eio.Path.mkdirs ~exists_ok:true ~perm:0o755 Eio.Path.(fs / dir);
+  Eio.Path.mkdirs ~exists_ok:true ~perm:0o755 Eio.Path.(Eio.Stdenv.fs env / dir);
   let token =
-    match token_opt with
-    | Some _ -> token_opt
-    | None -> Sys.getenv_opt "HF_TOKEN"
+    match token_opt with None -> Sys.getenv_opt "HF_TOKEN" | t -> t
   in
   (* [hf] arguments after the command word, shared by both invocations. The
      process inherits our stdin/stdout/stderr, so hf's progress bar shows. *)
@@ -99,9 +97,7 @@ let download (m : Model.t) token_opt =
 (* ---- list -------------------------------------------------------------- *)
 
 let list () =
-  guard @@ fun () ->
-  Eio_main.run @@ fun env ->
-  let xdg = Xdge.create (Eio.Stdenv.fs env) "ds4" in
+  run @@ fun _env xdg ->
   let dir = model_dir xdg in
   Printf.printf "Models (download dir: %s)\n\n" dir;
   Printf.printf "  %-3s %-22s %-9s %s\n" "" "TARGET" "ALIASES" "DESCRIPTION";
@@ -152,11 +148,9 @@ let on_event : Agent.event -> unit = function
   | Agent.Done -> print_newline ()
 
 let agent model_opt workspace system think =
-  guard @@ fun () ->
-  Eio_main.run @@ fun env ->
+  run @@ fun env xdg ->
   Eio.Switch.run @@ fun sw ->
   let fs = Eio.Stdenv.fs env in
-  let xdg = Xdge.create fs "ds4" in
   let proc = Eio.Stdenv.process_mgr env in
   let net = Eio.Stdenv.net env in
   let model_path = resolve_model ~xdg model_opt in
