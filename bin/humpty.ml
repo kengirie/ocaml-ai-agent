@@ -37,14 +37,22 @@ let resolve_model ~xdg model_opt =
 (* ---- chat -------------------------------------------------------------- *)
 
 (* The DS4 RNG is degenerate at state 0, so a 0 request becomes a per-run seed
-   derived from the clock and pid. *)
-let resolve_seed = function
-  | 0 ->
-      let t = Int64.of_float (Unix.gettimeofday () *. 1_000_000.) in
-      let p = Int64.shift_left (Int64.of_int (Unix.getpid ())) 32 in
-      let s = Int64.logxor t p in
-      if s = 0L then 0x2545F4914F6CDD1DL else s
-  | n -> Int64.of_int n
+   derived from the clock and pid. The chosen value is logged so a "random" run
+   can be reproduced deterministically with [--seed]. *)
+let resolve_seed n =
+  let s =
+    match n with
+    | 0 ->
+        let t = Int64.of_float (Unix.gettimeofday () *. 1_000_000.) in
+        let p = Int64.shift_left (Int64.of_int (Unix.getpid ())) 32 in
+        let s = Int64.logxor t p in
+        if s = 0L then 0x2545F4914F6CDD1DL else s
+    | n -> Int64.of_int n
+  in
+  Logs.info (fun m ->
+      m "seed: %Lu%s" s
+        (if n = 0 then " (random; pass --seed N to reproduce)" else ""));
+  s
 
 let chat model_opt system think max_tokens temperature seed prompt =
   run @@ fun env xdg ->
@@ -145,7 +153,7 @@ let on_event : Agent.event -> unit = function
       Printf.printf "\027[2m→ %s: %s\027[0m\n%!" name (truncate 200 result)
   | Agent.Done -> print_newline ()
 
-let agent model_opt workspace system think =
+let agent model_opt workspace system think seed =
   run @@ fun env xdg ->
   Eio.Switch.run @@ fun sw ->
   let fs = Eio.Stdenv.fs env in
@@ -165,7 +173,7 @@ let agent model_opt workspace system think =
      only this directory capability, so they cannot reach outside it. *)
   Eio.Path.with_open_dir Eio.Path.(fs / workspace) @@ fun ws ->
   let agent =
-    Agent.create engine ~system ~thinking:think
+    Agent.create engine ~system ~thinking:think ~seed:(resolve_seed seed)
       ~tools:
         [
           Toolbox.read ~dir:ws;
@@ -375,7 +383,9 @@ let agent_cmd =
     ]
   in
   let term =
-    with_log Term.(const agent $ model $ workspace $ agent_system $ agent_think)
+    with_log
+      Term.(
+        const agent $ model $ workspace $ agent_system $ agent_think $ seed)
   in
   Cmd.v (Cmd.info "agent" ~doc ~man) term
 
