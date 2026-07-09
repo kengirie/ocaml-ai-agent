@@ -1,4 +1,0 @@
-(library
- (name dsml)
- (public_name deepseek.dsml)
- (libraries jsont jsont.bytesrw bytesrw))

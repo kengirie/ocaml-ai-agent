@@ -1,31 +1,4 @@
-; test_toolbox: pure Eio-mock unit test of the tool/codec path (CPU default).
-
 (test
- (name test_toolbox)
- (libraries deepseek deepseek.dsml eio eio.mock)
- (modules test_toolbox))
-
-; live_agent_mock: drives the real engine with mocked tool I/O. This is the CPU
-; build (links deepseek.cpu); the Metal build of the SAME source lives in
-; ./metal. Both are registered so `dune runtest` includes them, but each skips
-; the multi-GB model load unless DS4_LIVE is set.
-
-(test
- (name live_agent_mock)
- (libraries
-  deepseek
-  deepseek.cpu
-  deepseek.cmd
-  deepseek.dsml
-  eio
-  eio.mock
-  eio_main
-  xdge)
- (modules live_agent_mock))
-
-; CPU backend build/link smoke test.
-
-(test
- (name cpu_smoke)
- (libraries deepseek deepseek.cpu)
- (modules cpu_smoke))
+ (name test_schema)
+ (libraries ocaml-ai-agent yojson)
+ (modules test_schema))

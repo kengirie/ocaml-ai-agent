@@ -1,28 +1,26 @@
-(lang dune 3.21)
-(using mdx 0.4)
-(name deepseek)
+(lang dune 3.0)
+
+(name ocaml-ai-agent)
 
 (generate_opam_files true)
 (implicit_transitive_deps false)
 
 (license ISC)
-(authors "Anil Madhavapeddy")
-(maintainers "Anil Madhavapeddy <anil@recoil.org>")
-(source (tangled anil.recoil.org/ocaml-deepseek))
+(authors "Anil Madhavapeddy (upstream ocaml-deepseek)" "kengirie")
+(maintainers "kengirie")
+(source
+ (github kengirie/ocaml-ai-agent))
 
 (package
- (name deepseek)
- (synopsis "Deepseek v4 LLM")
- (tags (org:blacksun deepseek llm))
+ (name ocaml-ai-agent)
+ (synopsis "Capability-confined tools for LLM agents in OCaml")
  (description
-  "Library and binary (`humpty`) to run Deepseek v4 locally, with a selectable inference backend (Apple Metal or CPU).")
+  "A small tool-using agent for the Anthropic Claude API whose tools are confined by Eio capabilities and described by a typed schema combinator. Cloud-only: no model weights and no native code.")
  (depends
   (ocaml (>= 5.2.0))
-  (dune-configurator :build)
-  (jsont (>= 0.2.0))
-  (xdge (>= 1.0.0))
   (eio (>= 1.0))
-  (logs (>= 0.7.0))
-  (bytesrw (>= 0.2.0))
-  (fmt (>= 0.8.7))
-  (cmdliner (>= 1.1.0))))
+  (piaf (>= 0.2.0))
+  (yojson (>= 2.0.0))
+  (uri (>= 4.0.0))
+  (cmdliner (>= 1.1.0))
+  (fmt (>= 0.8.7))))

@@ -1,34 +1,29 @@
 (*---------------------------------------------------------------------------
    Copyright (c) 2026 Anil Madhavapeddy. All rights reserved.
+   Copyright (c) 2026 kengirie. All rights reserved.
    SPDX-License-Identifier: ISC
   ---------------------------------------------------------------------------*)
-
-(* A typed tool: a Dsml invoke codec (schema + decoder) plus a handler over the
-   decoded OCaml value. The codec hides the JSON layer from the handler. *)
-
-module Json = Dsml.Json
 
 type t = {
   name : string;
   description : string;
-  schema : Json.t;
-  invoke : Dsml.tool_call -> string;
+  input_schema : Yojson.Safe.t;
+  run : Yojson.Safe.t -> string;
 }
 
-let v ~description codec handler =
+let v ~name ~description args handler =
   {
-    name = Dsml.Codec.name codec;
+    name;
     description;
-    schema = Dsml.Codec.schema codec;
-    invoke =
-      (fun call ->
-        match Dsml.Codec.decode_arguments codec call.arguments with
-        | Ok args -> (
-            try handler args with e -> "Error: " ^ Printexc.to_string e)
-        | Error msg -> "Error: " ^ msg);
+    input_schema = Schema.to_json_schema args;
+    run =
+      (fun input ->
+        match Schema.decode args input with
+        | Ok a -> ( try handler a with e -> "Error: " ^ Printexc.to_string e)
+        | Error e -> "Error: " ^ e);
   }
 
 let name t = t.name
 let description t = t.description
-let schema t = t.schema
-let invoke t call = t.invoke call
+let input_schema t = t.input_schema
+let run t input = t.run input

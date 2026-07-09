@@ -1,27 +1,5 @@
-;; The [humpty] binary selects its inference backend by linking an
-;; implementation of the virtual [deepseek] library: [deepseek.metal] here.
-;; Because Metal is macOS-only, this executable is gated to macOS; the portable
-;; CPU build of the same program lives in ./cpu and builds everywhere.
-
 (executable
- (name humpty)
- (public_name humpty-metal)
- (enabled_if
-  (= %{system} macosx))
- (libraries
-  deepseek
-  deepseek.metal
-  deepseek.cmd
-  deepseek.dsml
-  eio
-  eio_main
-  cmdliner
-  logs
-  logs.cli
-  logs.fmt
-  logs.threaded
-  fmt
-  fmt.cli
-  fmt.tty
-  xdge
-  unix))
+ (name main)
+ (public_name ocaml-ai-agent)
+ (libraries ocaml-ai-agent eio eio.core eio.unix eio_main yojson cmdliner)
+ (modules main))

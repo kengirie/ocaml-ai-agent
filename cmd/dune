@@ -1,4 +1,0 @@
-(library
- (name deepseek_cmd)
- (public_name deepseek.cmd)
- (libraries cmdliner xdge eio))

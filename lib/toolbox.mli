@@ -1,27 +1,21 @@
 (*---------------------------------------------------------------------------
    Copyright (c) 2026 Anil Madhavapeddy. All rights reserved.
+   Copyright (c) 2026 kengirie. All rights reserved.
    SPDX-License-Identifier: ISC
   ---------------------------------------------------------------------------*)
 
-(** A set of ready-made {!Tool.t} values, following Eio's capability model so
-    that each tool can reach only what it is handed. *)
+(** Ready-made {!Tool.t} values following Eio's capability model: each closes
+    over exactly one capability (a directory, the network, or the process
+    manager), so its reach is precisely what the caller grants. *)
 
 val read : dir:_ Eio.Path.t -> Tool.t
-(** [read ~dir] is a [read] tool that returns the contents of a file resolved
-    under [dir]. Grant a wide [dir] for broad read access or a sandboxed one to
-    limit it. *)
+(** [read ~dir] reads a UTF-8 file resolved under [dir] (and nothing outside it). *)
 
 val write : dir:_ Eio.Path.t -> Tool.t
-(** [write ~dir] is a [write] tool that creates or overwrites a file resolved
-    under [dir]. Pass an {!Eio.Path.open_dir} sandbox as [dir] to confine every
-    write to that subtree. *)
+(** [write ~dir] creates or overwrites a UTF-8 file resolved under [dir]. *)
 
 val dns : net:_ Eio.Net.t -> Tool.t
-(** [dns ~net] is a [dns] tool that resolves a hostname to its IP addresses with
-    {!Eio.Net.getaddrinfo} over [net], returning one address per line. Holding
-    [net] is the capability to reach the network, so grant it deliberately. *)
+(** [dns ~net] resolves a hostname to IP addresses over [net]. *)
 
 val bash : proc:_ Eio.Process.mgr -> Tool.t
-(** [bash ~proc] is a [bash] tool that runs a shell command with [proc] and
-    returns its combined output. Holding [proc] is the full capability to spawn
-    processes, so grant this tool deliberately. *)
+(** [bash ~proc] runs a shell command with [proc] and returns its output. *)

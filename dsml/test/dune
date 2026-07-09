@@ -1,4 +1,0 @@
-(test
- (name test_dsml)
- (libraries deepseek.dsml bytesrw)
- (modules test_dsml))
