@@ -31,23 +31,44 @@ dune build
 Pure OCaml; the only system dependency is OpenSSL (via piaf's TLS). No model
 weights and no C toolchain.
 
+## Providers
+
+Pick a provider with `-P` / `--provider`. Each reads its own API key from an
+environment variable (sent only in the auth header, never logged):
+
+| Provider    | `--provider` | API key env var      | Default model        |
+| ----------- | ------------ | -------------------- | -------------------- |
+| Anthropic   | `anthropic`  | `ANTHROPIC_API_KEY`  | `claude-opus-4-8`    |
+| OpenAI      | `openai`     | `OPENAI_API_KEY`     | `gpt-4o`             |
+| DeepSeek    | `deepseek`   | `DEEPSEEK_API_KEY`   | `deepseek-chat`      |
+| Kimi        | `kimi`       | `MOONSHOT_API_KEY`   | `moonshot-v1-8k`     |
+
+`anthropic` uses the native Claude Messages API; `openai` / `deepseek` / `kimi`
+all speak the OpenAI-compatible Chat Completions format and share one backend,
+so any other OpenAI-compatible endpoint works too — override the model with
+`-m`. Streaming, tool use, and (where the provider returns it) reasoning are
+handled the same way across all of them.
+
 ## Use
 
-Set your API key (sent only in the `x-api-key` header, never logged):
-
 ```sh
-export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_API_KEY=sk-ant-...     # or OPENAI_API_KEY / DEEPSEEK_API_KEY / MOONSHOT_API_KEY
 ```
 
 ```sh
-# One-shot chat (streams token-by-token):
+# One-shot chat (streams token-by-token), default provider (anthropic):
 dune exec bin/main.exe -- chat "Explain monads in one sentence."
 
-# Pick a model (default: claude-opus-4-8):
+# Other providers (each uses its own default model unless -m is given):
+dune exec bin/main.exe -- chat -P openai "Hello?"
+dune exec bin/main.exe -- chat -P deepseek -m deepseek-chat "Hello?"
+dune exec bin/main.exe -- chat -P kimi "Hello?"
+
+# Pick a model explicitly:
 dune exec bin/main.exe -- chat -m claude-opus-4-8 "Hello?"
 
 # Tool-using agent, sandboxed to a workspace, single prompt then exit:
-dune exec bin/main.exe -- agent -d ./workspace -p "read README.md and summarise it"
+dune exec bin/main.exe -- agent -P deepseek -d ./workspace -p "read README.md and summarise it"
 
 # Interactive agent (Ctrl-D to exit):
 dune exec bin/main.exe -- agent -d ./workspace
@@ -65,8 +86,10 @@ The agent advertises `read` / `write` / `dns` / `bash`, each confined to the
   and the decoder.
 - `Tool` / `Toolbox` — capability-confined tools built from a `Schema`.
 - `Message` — provider-independent conversation (keeps tool-call ids).
-- `Llm.S` — backend abstraction (`converse`); the point to add OpenAI/Gemini.
+- `Llm.S` — backend abstraction (`converse`); the point to add more providers.
 - `Anthropic` — the Claude backend over piaf (non-streaming + SSE, tool_use).
+- `Openai` — one OpenAI-compatible Chat Completions backend for OpenAI,
+  DeepSeek, Kimi, and any other endpoint that speaks the same format.
 - `Agent` — drives a backend, runs tools, folds results back in.
 
 ## Credits & license

@@ -6,6 +6,7 @@
 
 module Agent = Ocaml_ai_agent.Agent
 module Anthropic = Ocaml_ai_agent.Anthropic
+module Openai = Ocaml_ai_agent.Openai
 module Toolbox = Ocaml_ai_agent.Toolbox
 module Params = Ocaml_ai_agent.Params
 
@@ -35,27 +36,62 @@ let guard f =
       Printf.eprintf "ocaml-ai-agent: %s\n" (Printexc.to_string e);
       exit 1
 
-let chat model system no_stream temperature max_tokens prompt =
+(* Providers. Anthropic uses the {!Anthropic} backend; OpenAI, DeepSeek and Kimi
+   all speak the OpenAI Chat Completions wire format, so they share the {!Openai}
+   backend and differ only in base URL, key env var, and default model. *)
+
+let provider_endpoint = function
+  | `Openai -> ("https://api.openai.com/v1", "OPENAI_API_KEY")
+  | `Deepseek -> ("https://api.deepseek.com/v1", "DEEPSEEK_API_KEY")
+  | `Kimi -> ("https://api.moonshot.ai/v1", "MOONSHOT_API_KEY")
+
+let default_model = function
+  | `Anthropic -> Anthropic.default_model
+  | `Openai -> "gpt-4o"
+  | `Deepseek -> "deepseek-chat"
+  | `Kimi -> "moonshot-v1-8k"
+
+let provider_label = function
+  | `Anthropic -> "Anthropic"
+  | `Openai -> "OpenAI"
+  | `Deepseek -> "DeepSeek"
+  | `Kimi -> "Kimi (Moonshot)"
+
+(* [make_agent] returns the resolved model name (a "" model means "provider
+   default") and an {!Agent.t} over the right backend. *)
+let make_agent ~env ~sw ~provider ~model ~stream ~system ~params ~tools =
+  let model = if model = "" then default_model provider else model in
+  match provider with
+  | `Anthropic ->
+      let be = Anthropic.create ~sw ~env ~model ~stream () in
+      (model, Agent.create ~system ~params ~tools (module Anthropic) be)
+  | (`Openai | `Deepseek | `Kimi) as p ->
+      let base_url, api_key_env = provider_endpoint p in
+      let be = Openai.create ~sw ~env ~base_url ~api_key_env ~model ~stream () in
+      (model, Agent.create ~system ~params ~tools (module Openai) be)
+
+let chat provider model system no_stream temperature max_tokens prompt =
   guard @@ fun () ->
   Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
   let stdout = Eio.Stdenv.stdout env in
-  let be = Anthropic.create ~sw ~env ~model ~stream:(not no_stream) () in
   let params = { Params.temperature; max_tokens } in
-  let agent = Agent.create ~system ~params (module Anthropic) be in
+  let _model, agent =
+    make_agent ~env ~sw ~provider ~model ~stream:(not no_stream) ~system ~params
+      ~tools:[]
+  in
   Agent.send agent prompt ~on_event:(function
     | Agent.Content c -> Eio.Flow.copy_string c stdout
     | _ -> ());
   Eio.Flow.copy_string "\n" stdout
 
-let agent model system no_stream temperature max_tokens dir prompt_opt =
+let agent provider model system no_stream temperature max_tokens dir prompt_opt =
   guard @@ fun () ->
   Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
   let fs = Eio.Stdenv.fs env in
   let proc = Eio.Stdenv.process_mgr env in
   let net = Eio.Stdenv.net env in
-  let be = Anthropic.create ~sw ~env ~model ~stream:(not no_stream) () in
   let params = { Params.temperature; max_tokens } in
   Eio.Path.with_open_dir Eio.Path.(fs / dir) @@ fun ws ->
   let tools =
@@ -66,11 +102,14 @@ let agent model system no_stream temperature max_tokens dir prompt_opt =
       Toolbox.bash ~proc;
     ]
   in
-  let agent = Agent.create ~system ~params ~tools (module Anthropic) be in
+  let model, agent =
+    make_agent ~env ~sw ~provider ~model ~stream:(not no_stream) ~system ~params
+      ~tools
+  in
   Printf.printf
-    "model: %s  (Anthropic cloud)\nworkspace: %s\ntools: read, write, dns, \
-     bash.  Ctrl-D to exit.\n\n%!"
-    model dir;
+    "provider: %s\nmodel: %s\nworkspace: %s\ntools: read, write, dns, bash.  \
+     Ctrl-D to exit.\n\n%!"
+    (provider_label provider) model dir;
   match prompt_opt with
   | Some p -> Agent.send agent ~on_event p
   | None ->
@@ -91,10 +130,29 @@ let agent model system no_stream temperature max_tokens dir prompt_opt =
 
 open Cmdliner
 
+let provider_arg =
+  let provs =
+    [
+      ("anthropic", `Anthropic);
+      ("openai", `Openai);
+      ("deepseek", `Deepseek);
+      ("kimi", `Kimi);
+    ]
+  in
+  Arg.(
+    value
+    & opt (enum provs) `Anthropic
+    & info [ "P"; "provider" ] ~docv:"PROVIDER"
+        ~doc:
+          "The LLM provider: $(b,anthropic), $(b,openai), $(b,deepseek), or \
+           $(b,kimi). Each reads its own API key env var (ANTHROPIC_API_KEY, \
+           OPENAI_API_KEY, DEEPSEEK_API_KEY, MOONSHOT_API_KEY).")
+
 let model_arg =
   Arg.(
-    value & opt string Anthropic.default_model
-    & info [ "m"; "model" ] ~docv:"MODEL" ~doc:"The Claude model name.")
+    value & opt string ""
+    & info [ "m"; "model" ] ~docv:"MODEL"
+        ~doc:"The model name. Defaults to a per-provider model when omitted.")
 
 let no_stream_arg =
   Arg.(
@@ -140,20 +198,20 @@ let agent_prompt_arg =
         ~doc:"Send a single PROMPT and exit instead of the interactive REPL.")
 
 let chat_cmd =
-  let doc = "Send one prompt to Claude and print the reply." in
+  let doc = "Send one prompt to a model and print the reply." in
   let term =
     Term.(
-      const chat $ model_arg
+      const chat $ provider_arg $ model_arg
       $ system_arg "You are a helpful assistant."
       $ no_stream_arg $ temperature_arg $ max_tokens_arg $ prompt_pos)
   in
   Cmd.v (Cmd.info "chat" ~doc) term
 
 let agent_cmd =
-  let doc = "Run a tool-using agent against Claude, confined to a workspace." in
+  let doc = "Run a tool-using agent against a model, confined to a workspace." in
   let term =
     Term.(
-      const agent $ model_arg
+      const agent $ provider_arg $ model_arg
       $ system_arg "You are a concise coding agent. Use tools when helpful."
       $ no_stream_arg $ temperature_arg $ max_tokens_arg $ dir_arg
       $ agent_prompt_arg)
@@ -161,6 +219,6 @@ let agent_cmd =
   Cmd.v (Cmd.info "agent" ~doc) term
 
 let () =
-  let doc = "Capability-confined tools for LLM agents (Anthropic Claude)." in
+  let doc = "Capability-confined tools for LLM agents (multi-provider)." in
   let info = Cmd.info "ocaml-ai-agent" ~version:"0.1" ~doc in
   exit (Cmd.eval (Cmd.group info [ chat_cmd; agent_cmd ]))

@@ -32,23 +32,44 @@ dune build
 純粋な OCaml です。システム依存は（piaf の TLS 経由で）OpenSSL のみ。
 モデルの重みも C ツールチェインも不要です。
 
+## プロバイダ
+
+`-P` / `--provider` でプロバイダを選びます。各プロバイダはそれぞれの環境変数から
+API キーを読みます（認証ヘッダにのみ送られ、ログには残りません）:
+
+| プロバイダ  | `--provider` | API キー環境変数     | デフォルトモデル      |
+| ----------- | ------------ | -------------------- | -------------------- |
+| Anthropic   | `anthropic`  | `ANTHROPIC_API_KEY`  | `claude-opus-4-8`    |
+| OpenAI      | `openai`     | `OPENAI_API_KEY`     | `gpt-4o`             |
+| DeepSeek    | `deepseek`   | `DEEPSEEK_API_KEY`   | `deepseek-chat`      |
+| Kimi        | `kimi`       | `MOONSHOT_API_KEY`   | `moonshot-v1-8k`     |
+
+`anthropic` はネイティブの Claude Messages API を使います。`openai` /
+`deepseek` / `kimi` はいずれも OpenAI 互換の Chat Completions 形式を話すため、
+1 つのバックエンドを共有します。したがって他の OpenAI 互換エンドポイントも
+`-m` でモデルを指定すれば利用できます。ストリーミング・tool 呼び出し・
+（プロバイダが返す場合の）推論内容は、いずれのプロバイダでも同じように扱われます。
+
 ## 使い方
 
-API キーを設定します（`x-api-key` ヘッダにのみ送られ、ログには残りません）:
-
 ```sh
-export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_API_KEY=sk-ant-...     # または OPENAI_API_KEY / DEEPSEEK_API_KEY / MOONSHOT_API_KEY
 ```
 
 ```sh
-# 一発のチャット（トークン単位でストリーミング）:
+# 一発のチャット（トークン単位でストリーミング）。デフォルトは anthropic:
 dune exec bin/main.exe -- chat "モナドを一文で説明して。"
 
-# モデルを指定（デフォルト: claude-opus-4-8）:
+# 別プロバイダ（-m 省略時は各プロバイダのデフォルトモデル）:
+dune exec bin/main.exe -- chat -P openai "こんにちは？"
+dune exec bin/main.exe -- chat -P deepseek -m deepseek-chat "こんにちは？"
+dune exec bin/main.exe -- chat -P kimi "こんにちは？"
+
+# モデルを明示的に指定:
 dune exec bin/main.exe -- chat -m claude-opus-4-8 "こんにちは？"
 
 # ツール利用エージェント。ワークスペースに閉じ込め、1 プロンプトで終了:
-dune exec bin/main.exe -- agent -d ./workspace -p "README.md を読んで要約して"
+dune exec bin/main.exe -- agent -P deepseek -d ./workspace -p "README.md を読んで要約して"
 
 # 対話的なエージェント（Ctrl-D で終了）:
 dune exec bin/main.exe -- agent -d ./workspace
@@ -67,8 +88,10 @@ dune exec bin/main.exe -- chat --no-stream "こんにちは"
   生成します。
 - `Tool` / `Toolbox` — `Schema` から組み立てる、ケイパビリティで縛られたツール。
 - `Message` — プロバイダ非依存の会話表現（ツールコールの id を保持）。
-- `Llm.S` — バックエンドの抽象（`converse`）。OpenAI/Gemini を足すならここ。
+- `Llm.S` — バックエンドの抽象（`converse`）。プロバイダを足すならここ。
 - `Anthropic` — piaf 上の Claude バックエンド（非ストリーミング + SSE、tool_use）。
+- `Openai` — OpenAI 互換の Chat Completions バックエンド 1 つで OpenAI /
+  DeepSeek / Kimi など、同じ形式を話すエンドポイントすべてに対応。
 - `Agent` — バックエンドを駆動し、ツールを実行し、結果を会話に折り込みます。
 
 ## クレジット・ライセンス
