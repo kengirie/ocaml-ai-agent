@@ -24,10 +24,15 @@ val create :
   ?api_key:string ->
   ?model:string ->
   ?stream:bool ->
+  ?retry:Retry.config ->
   unit ->
   t
 (** [create ~sw ~env ()] is a cloud backend. [api_key] defaults to the
     [ANTHROPIC_API_KEY] environment variable, raising [Failure] if unset;
     [model] defaults to {!default_model}; [base_url] to ["https://api.anthropic.com"];
     [stream] to [true]. The key is sent only in the [x-api-key] header and is
-    never logged. *)
+    never logged.
+
+    Transient failures — connection errors, 408/429/5xx — are retried with
+    exponential backoff per [retry] (default {!Retry.default}), emitting
+    {!Llm.Retry} before each wait. Other HTTP errors raise [Failure] at once. *)

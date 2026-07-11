@@ -15,10 +15,11 @@ type t = {
   model : string;
   base_url : string;
   stream : bool;
+  retry : Retry.config;
 }
 
 let create ~sw ~env ~base_url ?api_key ?(api_key_env = "OPENAI_API_KEY") ~model
-    ?(stream = true) () =
+    ?(stream = true) ?(retry = Retry.default) () =
   let api_key =
     match api_key with
     | Some k when k <> "" -> k
@@ -31,7 +32,7 @@ let create ~sw ~env ~base_url ?api_key ?(api_key_env = "OPENAI_API_KEY") ~model
                  "OpenAI-compatible backend: set the %s environment variable"
                  api_key_env))
   in
-  { env; sw; api_key; model; base_url; stream }
+  { env; sw; api_key; model; base_url; stream; retry }
 
 let tool_to_json (tl : Tool.t) : Yojson.Safe.t =
   `Assoc
@@ -111,7 +112,10 @@ let request_body t ~stream ~system ~tools ~messages ~(params : Params.t) : strin
   in
   Yojson.Safe.to_string (`Assoc fields)
 
-let send_request t ?(extra_headers = []) body_string =
+(* Retries cover the request and status line only: once we start consuming a
+   response body (or SSE stream) events have already been emitted, so a failure
+   there is not replayed. *)
+let send_request t ~on_event ?(extra_headers = []) body_string =
   let uri = Uri.of_string (t.base_url ^ "/chat/completions") in
   let headers =
     [
@@ -120,22 +124,36 @@ let send_request t ?(extra_headers = []) body_string =
     ]
     @ extra_headers
   in
-  let body = Piaf.Body.of_string body_string in
-  match Piaf.Client.Oneshot.post ~headers ~body ~sw:t.sw t.env uri with
-  | Error e ->
-      failwith ("OpenAI-compatible request failed: " ^ Piaf.Error.to_string e)
-  | Ok response ->
-      let status = Piaf.Response.status response in
-      if Piaf.Status.is_successful status then response
-      else
-        let body_str =
-          match Piaf.Body.to_string (Piaf.Response.body response) with
-          | Ok s -> s
-          | Error _ -> ""
-        in
-        failwith
-          (Printf.sprintf "OpenAI-compatible API error (%s): %s"
-             (Piaf.Status.to_string status) body_str)
+  let attempt () =
+    let body = Piaf.Body.of_string body_string in
+    match Piaf.Client.Oneshot.post ~headers ~body ~sw:t.sw t.env uri with
+    | Error e ->
+        Error
+          (`Retryable
+             ("OpenAI-compatible request failed: " ^ Piaf.Error.to_string e))
+    | Ok response ->
+        let status = Piaf.Response.status response in
+        if Piaf.Status.is_successful status then Ok response
+        else
+          let body_str =
+            match Piaf.Body.to_string (Piaf.Response.body response) with
+            | Ok s -> s
+            | Error _ -> ""
+          in
+          let msg =
+            Printf.sprintf "OpenAI-compatible API error (%s): %s"
+              (Piaf.Status.to_string status) body_str
+          in
+          if Retry.retryable_status (Piaf.Status.to_code status) then
+            Error (`Retryable msg)
+          else Error (`Fatal msg)
+  in
+  Retry.run
+    ~sleep:(Eio.Time.sleep (Eio.Stdenv.clock t.env))
+    ~config:t.retry
+    ~on_retry:(fun ~attempt ~max ~delay ~reason ->
+      on_event (Llm.Retry { attempt; max; delay; reason }))
+    attempt
 
 let str_of = function `String s -> s | _ -> ""
 
@@ -174,7 +192,7 @@ let parse_response ~on_event body_str : Message.t =
 
 let converse_nonstream t ~system ~tools ~messages ~params ~on_event : Message.t =
   let body = request_body t ~stream:false ~system ~tools ~messages ~params in
-  let response = send_request t body in
+  let response = send_request t ~on_event body in
   let body_str =
     match Piaf.Body.to_string (Piaf.Response.body response) with
     | Ok s -> s
@@ -187,7 +205,9 @@ let converse_nonstream t ~system ~tools ~messages ~params ~on_event : Message.t 
 let converse_stream t ~system ~tools ~messages ~params ~on_event : Message.t =
   let body = request_body t ~stream:true ~system ~tools ~messages ~params in
   let response =
-    send_request t ~extra_headers:[ ("accept", "text/event-stream") ] body
+    send_request t ~on_event
+      ~extra_headers:[ ("accept", "text/event-stream") ]
+      body
   in
   let text = Buffer.create 256 and thinking = Buffer.create 64 in
   (* index -> (id, name, arguments) accumulated across delta chunks. *)

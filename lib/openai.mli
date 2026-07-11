@@ -24,6 +24,7 @@ val create :
   ?api_key_env:string ->
   model:string ->
   ?stream:bool ->
+  ?retry:Retry.config ->
   unit ->
   t
 (** [create ~sw ~env ~base_url ~model ()] is an OpenAI-compatible cloud backend
@@ -31,4 +32,8 @@ val create :
     ["https://api.openai.com/v1"]). [api_key] defaults to the environment
     variable named by [api_key_env] (default ["OPENAI_API_KEY"]), raising
     [Failure] if unset; [stream] to [true]. The key is sent only in the
-    [Authorization: Bearer] header and is never logged. *)
+    [Authorization: Bearer] header and is never logged.
+
+    Transient failures — connection errors, 408/429/5xx — are retried with
+    exponential backoff per [retry] (default {!Retry.default}), emitting
+    {!Llm.Retry} before each wait. Other HTTP errors raise [Failure] at once. *)

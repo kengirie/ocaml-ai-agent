@@ -25,6 +25,14 @@ let on_event : Agent.event -> unit = function
         (truncate 120 (Yojson.Safe.to_string tc.input))
   | Agent.Tool_result (name, result) ->
       Printf.printf "\027[2m\xe2\x86\x92 %s: %s\027[0m\n%!" name (truncate 200 result)
+  | Agent.Retry { attempt; max; delay; reason } ->
+      Printf.eprintf "\027[33m\xe2\x9f\xb3 retry %d/%d in %.0fs: %s\027[0m\n%!"
+        attempt max delay (truncate 120 reason)
+  | Agent.Turn_limit n ->
+      Printf.printf
+        "\n\027[31m\xe2\x96\xa0 stopped after %d model calls (--max-turns); \
+         send another prompt to continue\027[0m\n%!"
+        n
   | Agent.Done -> print_newline ()
 
 let guard f =
@@ -59,16 +67,17 @@ let provider_label = function
 
 (* [make_agent] returns the resolved model name (a "" model means "provider
    default") and an {!Agent.t} over the right backend. *)
-let make_agent ~env ~sw ~provider ~model ~stream ~system ~params ~tools =
+let make_agent ?max_turns ~env ~sw ~provider ~model ~stream ~system ~params
+    ~tools () =
   let model = if model = "" then default_model provider else model in
   match provider with
   | `Anthropic ->
       let be = Anthropic.create ~sw ~env ~model ~stream () in
-      (model, Agent.create ~system ~params ~tools (module Anthropic) be)
+      (model, Agent.create ?max_turns ~system ~params ~tools (module Anthropic) be)
   | (`Openai | `Deepseek | `Kimi) as p ->
       let base_url, api_key_env = provider_endpoint p in
       let be = Openai.create ~sw ~env ~base_url ~api_key_env ~model ~stream () in
-      (model, Agent.create ~system ~params ~tools (module Openai) be)
+      (model, Agent.create ?max_turns ~system ~params ~tools (module Openai) be)
 
 let chat provider model system no_stream temperature max_tokens prompt =
   guard @@ fun () ->
@@ -78,14 +87,15 @@ let chat provider model system no_stream temperature max_tokens prompt =
   let params = { Params.temperature; max_tokens } in
   let _model, agent =
     make_agent ~env ~sw ~provider ~model ~stream:(not no_stream) ~system ~params
-      ~tools:[]
+      ~tools:[] ()
   in
   Agent.send agent prompt ~on_event:(function
     | Agent.Content c -> Eio.Flow.copy_string c stdout
     | _ -> ());
   Eio.Flow.copy_string "\n" stdout
 
-let agent provider model system no_stream temperature max_tokens dir prompt_opt =
+let agent provider model system no_stream temperature max_tokens max_turns dir
+    prompt_opt =
   guard @@ fun () ->
   Eio_main.run @@ fun env ->
   Eio.Switch.run @@ fun sw ->
@@ -103,8 +113,8 @@ let agent provider model system no_stream temperature max_tokens dir prompt_opt 
     ]
   in
   let model, agent =
-    make_agent ~env ~sw ~provider ~model ~stream:(not no_stream) ~system ~params
-      ~tools
+    make_agent ~max_turns ~env ~sw ~provider ~model ~stream:(not no_stream)
+      ~system ~params ~tools ()
   in
   Printf.printf
     "provider: %s\nmodel: %s\nworkspace: %s\ntools: read, write, dns, bash.  \
@@ -184,6 +194,14 @@ let prompt_pos =
     & pos 0 (some string) None
     & info [] ~docv:"PROMPT" ~doc:"The prompt to send.")
 
+let max_turns_arg =
+  Arg.(
+    value & opt int 50
+    & info [ "max-turns" ] ~docv:"N"
+        ~doc:
+          "The maximum number of model calls per prompt before the agent \
+           stops (the conversation stays resumable).")
+
 let dir_arg =
   Arg.(
     value & opt string "."
@@ -213,8 +231,8 @@ let agent_cmd =
     Term.(
       const agent $ provider_arg $ model_arg
       $ system_arg "You are a concise coding agent. Use tools when helpful."
-      $ no_stream_arg $ temperature_arg $ max_tokens_arg $ dir_arg
-      $ agent_prompt_arg)
+      $ no_stream_arg $ temperature_arg $ max_tokens_arg $ max_turns_arg
+      $ dir_arg $ agent_prompt_arg)
   in
   Cmd.v (Cmd.info "agent" ~doc) term
 

@@ -2,4 +2,4 @@
  (name ocaml_ai_agent)
  (public_name ocaml-ai-agent)
  (libraries eio eio.core eio.unix fmt yojson piaf uri)
- (modules schema tool toolbox message params llm agent anthropic openai))
+ (modules schema tool toolbox message params llm retry agent anthropic openai))

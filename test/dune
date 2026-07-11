@@ -2,3 +2,8 @@
  (name test_schema)
  (libraries ocaml-ai-agent yojson)
  (modules test_schema))
+
+(test
+ (name test_agent)
+ (libraries ocaml-ai-agent yojson)
+ (modules test_agent))

@@ -13,6 +13,12 @@ type event =
   | Content of string
   | Tool_call of Message.tool_call
   | Tool_result of string * string
+  | Retry of { attempt : int; max : int; delay : float; reason : string }
+      (** A transient API failure; the backend sleeps [delay] seconds and
+          retries ([attempt] of [max]). *)
+  | Turn_limit of int
+      (** The {!Agent} stopped after this many backend calls in one send.
+          History stays consistent, so the next send resumes cleanly. *)
   | Done
 
 module type S = sig

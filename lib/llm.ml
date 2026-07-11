@@ -9,6 +9,8 @@ type event =
   | Content of string
   | Tool_call of Message.tool_call
   | Tool_result of string * string
+  | Retry of { attempt : int; max : int; delay : float; reason : string }
+  | Turn_limit of int
   | Done
 
 module type S = sig

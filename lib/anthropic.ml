@@ -11,12 +11,13 @@ type t = {
   base_url : string;
   version : string;
   stream : bool;
+  retry : Retry.config;
 }
 
 let default_model = "claude-opus-4-8"
 
 let create ~sw ~env ?(base_url = "https://api.anthropic.com") ?api_key
-    ?(model = default_model) ?(stream = true) () =
+    ?(model = default_model) ?(stream = true) ?(retry = Retry.default) () =
   let api_key =
     match api_key with
     | Some k when k <> "" -> k
@@ -28,7 +29,7 @@ let create ~sw ~env ?(base_url = "https://api.anthropic.com") ?api_key
               "Anthropic backend: set the ANTHROPIC_API_KEY environment \
                variable")
   in
-  { env; sw; api_key; model; base_url; version = "2023-06-01"; stream }
+  { env; sw; api_key; model; base_url; version = "2023-06-01"; stream; retry }
 
 let tool_to_json (tl : Tool.t) : Yojson.Safe.t =
   `Assoc
@@ -112,7 +113,10 @@ let request_body t ~stream ~system ~tools ~messages ~(params : Params.t) :
   in
   Yojson.Safe.to_string (`Assoc fields)
 
-let send_request t ?(extra_headers = []) body_string =
+(* Retries cover the request and status line only: once we start consuming a
+   response body (or SSE stream) events have already been emitted, so a failure
+   there is not replayed. *)
+let send_request t ~on_event ?(extra_headers = []) body_string =
   let uri = Uri.of_string (t.base_url ^ "/v1/messages") in
   let headers =
     [
@@ -122,21 +126,34 @@ let send_request t ?(extra_headers = []) body_string =
     ]
     @ extra_headers
   in
-  let body = Piaf.Body.of_string body_string in
-  match Piaf.Client.Oneshot.post ~headers ~body ~sw:t.sw t.env uri with
-  | Error e -> failwith ("Anthropic request failed: " ^ Piaf.Error.to_string e)
-  | Ok response ->
-      let status = Piaf.Response.status response in
-      if Piaf.Status.is_successful status then response
-      else
-        let body_str =
-          match Piaf.Body.to_string (Piaf.Response.body response) with
-          | Ok s -> s
-          | Error _ -> ""
-        in
-        failwith
-          (Printf.sprintf "Anthropic API error (%s): %s"
-             (Piaf.Status.to_string status) body_str)
+  let attempt () =
+    let body = Piaf.Body.of_string body_string in
+    match Piaf.Client.Oneshot.post ~headers ~body ~sw:t.sw t.env uri with
+    | Error e ->
+        Error (`Retryable ("Anthropic request failed: " ^ Piaf.Error.to_string e))
+    | Ok response ->
+        let status = Piaf.Response.status response in
+        if Piaf.Status.is_successful status then Ok response
+        else
+          let body_str =
+            match Piaf.Body.to_string (Piaf.Response.body response) with
+            | Ok s -> s
+            | Error _ -> ""
+          in
+          let msg =
+            Printf.sprintf "Anthropic API error (%s): %s"
+              (Piaf.Status.to_string status) body_str
+          in
+          if Retry.retryable_status (Piaf.Status.to_code status) then
+            Error (`Retryable msg)
+          else Error (`Fatal msg)
+  in
+  Retry.run
+    ~sleep:(Eio.Time.sleep (Eio.Stdenv.clock t.env))
+    ~config:t.retry
+    ~on_retry:(fun ~attempt ~max ~delay ~reason ->
+      on_event (Llm.Retry { attempt; max; delay; reason }))
+    attempt
 
 let parse_response ~on_event body_str : Message.t =
   let open Yojson.Safe.Util in
@@ -173,7 +190,7 @@ let parse_response ~on_event body_str : Message.t =
 
 let converse_nonstream t ~system ~tools ~messages ~params ~on_event : Message.t =
   let body = request_body t ~stream:false ~system ~tools ~messages ~params in
-  let response = send_request t body in
+  let response = send_request t ~on_event body in
   let body_str =
     match Piaf.Body.to_string (Piaf.Response.body response) with
     | Ok s -> s
@@ -185,7 +202,9 @@ let converse_nonstream t ~system ~tools ~messages ~params ~on_event : Message.t 
 let converse_stream t ~system ~tools ~messages ~params ~on_event : Message.t =
   let body = request_body t ~stream:true ~system ~tools ~messages ~params in
   let response =
-    send_request t ~extra_headers:[ ("accept", "text/event-stream") ] body
+    send_request t ~on_event
+      ~extra_headers:[ ("accept", "text/event-stream") ]
+      body
   in
   let text = Buffer.create 256 and thinking = Buffer.create 64 in
   let calls = ref [] in
