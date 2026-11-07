@@ -13,7 +13,7 @@ import wave
 
 import numpy as np
 
-from config import BUILD, SCENES, SPEAKER_NAME, SPEAKER_STYLE, SPEED, SR, plain, cue_prefixes
+from config import BUILD, PAUSE_SCALE, SCENES, SPEAKER_NAME, SPEAKER_STYLE, SPEED, SR, plain, cue_prefixes
 
 HOST = os.environ.get("VOICEVOX_URL", "http://127.0.0.1:50021")
 
@@ -66,6 +66,7 @@ def main():
         text = plain(sc["say"])
         q = call("/audio_query", {"text": text, "speaker": sid})
         q["speedScale"] = SPEED
+        q["pauseLengthScale"] = PAUSE_SCALE
         q["prePhonemeLength"] = 0.05
         q["postPhonemeLength"] = 0.05
         q["outputSamplingRate"] = SR
