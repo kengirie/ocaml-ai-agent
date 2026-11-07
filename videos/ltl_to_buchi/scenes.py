@@ -238,7 +238,7 @@ def build_5(c, dur):
     ]
     for k, (m, t) in enumerate(lines):
         els.append(El(txt(m, 44), SAFE_L + 10, 780 + k * 88, t, sfx=None))
-    fin = boxed([("約束を果たした " + Q(1, "p") + " が", 46), ("＝ {p:受理状態}", 54)], SAFE_R - 300, border="p",
+    fin = boxed([("約束を果たした " + Q(1, "p") + " が", 46), ("＝ {p:受理状態}", 54)], SAFE_R - 360, border="p",
                 align="c")
     els.append(El(fin, SAFE_R, 1120, c[5], anchor="rt", anim="pop", sfx=None))
     return els

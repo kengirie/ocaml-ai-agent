@@ -18,16 +18,16 @@ SPEAKER_STYLE = "ノーマル"
 SPEED = 1.3 if ZUNDA else 1.2
 PAUSE_SCALE = 0.35 if ZUNDA else 0.5  # 句読点の間を短く
 CREDIT = f"VOICEVOX:{SPEAKER_NAME}"
-CREDIT2 = "立ち絵：東北ずん子・ずんだもんプロジェクト" if ZUNDA else None
+CREDIT2 = "立ち絵：坂本アヒル様「ずんだもん立ち絵素材」" if ZUNDA else None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _SCRATCH = "/tmp/claude-0/-home-user-ocaml-ai-agent/5fc98760-5e21-5f6b-9633-885da90bde4c/scratchpad"
 BUILD = os.environ.get("LTL_BUILD", os.path.join(_SCRATCH, "build_zunda" if ZUNDA else "build"))
 OUT = os.path.join(HERE, "ltl_to_buchi_shorts_zundamon.mp4" if ZUNDA else "ltl_to_buchi_shorts.mp4")
-ASSETS = os.path.join(_SCRATCH, "zunda_assets")  # fetch_zundamon.py が公式立ち絵を置く場所
+ASSETS = os.path.join(_SCRATCH, "zunda_assets")  # cut_zundamon.py が切り出した立ち絵を置く場所
 
 # ずんだもんが立つ左下の領域（ここには文字を置かない）
-CHAR_BOX = (60, 1190, 300, SAFE_B)
+CHAR_BOX = (60, 1190, 340, SAFE_B)
 
 FONT_REG = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
 FONT_BOLD = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
@@ -101,10 +101,8 @@ ZUNDA_SAY = [
     "どんな式でも、手順は同じなのだ。|否定を内側に押し込み、|てんかいそくで「今」と「次の約束」に分け、|約束の組み合わせを状態にして、|ユーとエフごとに先延ばし禁止の受理条件をつける。|これがタブロー法なのだ！",
     "まとめなのだ。|エルティーエルは、未来への約束。|状態は、まだ果たしていない約束。|受理条件は、先延ばし禁止なのだ！",
 ]
-# シーンごとの立ち絵 [(シーン内のキュー番号, 立ち絵の番号)]
-ZUNDA_POSES = {0: [(0, "004")], 1: [(0, "002")], 2: [(0, "030")], 3: [(0, "003"), (4, "030")],
-               4: [(0, "002")], 5: [(0, "003"), (5, "030")], 6: [(0, "002"), (3, "037"), (6, "003")],
-               7: [(0, "002"), (5, "004")], 8: [(0, "030")]}
+# ずんだもんがぴょんと跳ねるキュー（シーンごとのキュー番号）
+ZUNDA_HOPS = {0: [], 1: [6], 2: [3], 3: [4], 4: [6], 5: [5], 6: [3], 7: [5], 8: [3]}
 
 if ZUNDA:
     for _sc, _say in zip(SCENES, ZUNDA_SAY):

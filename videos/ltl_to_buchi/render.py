@@ -151,7 +151,7 @@ def build(sp):
     dur = sp["frames"] / FPS
     els = BUILDERS[sp["id"]](sp["cues"], dur)
     if ZUNDA:
-        from zunda import Zundamon
+        from zunda import Zundamon  # noqa: E402
         els.append(Zundamon(sp["id"], sp["cues"], sp["phrases"], first_scene=sp["id"] == 0))
     return els
 
