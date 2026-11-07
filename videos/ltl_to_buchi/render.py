@@ -13,7 +13,7 @@ from multiprocessing import Pool
 import numpy as np
 from PIL import Image, ImageDraw
 
-from config import BUILD, COL, FPS, H, PAD_POST, PAD_PRE, SAFE_B, SAFE_L, SAFE_R, SAFE_T, SCENES, W, cue_prefixes, plain
+from config import BUILD, CHAR_BOX, CREDIT, CREDIT2, ZUNDA, COL, FPS, H, PAD_POST, PAD_PRE, SAFE_B, SAFE_L, SAFE_R, SAFE_T, SCENES, W, cue_prefixes, plain
 from gfx import Txt, in_safe, panel, paste, ss_canvas, ss_done, txt
 from scenes import BUILDERS
 
@@ -31,7 +31,7 @@ def load_timing():
         n = len(plain(sc["say"]))
         v = n * 0.125
         cues = [len(p) * 0.125 for p in cue_prefixes(sc["say"])]
-        est[sc["id"]] = {"voice": v, "cues": cues}
+        est[sc["id"]] = {"voice": v, "cues": cues, "phrases": [[0, v, ""]]}
     return est, True
 
 
@@ -42,7 +42,8 @@ def scene_plan():
         s = tm[sc["id"]]
         frames = math.ceil((PAD_PRE + s["voice"] + PAD_POST) * FPS)
         plan.append({"id": sc["id"], "chip": sc["chip"], "voice": s["voice"], "frames": frames,
-                     "start_frame": start, "cues": [PAD_PRE + c for c in s["cues"]]})
+                     "start_frame": start, "cues": [PAD_PRE + c for c in s["cues"]],
+                     "phrases": s["phrases"]})
         start += frames
     return plan, start, estimated
 
@@ -82,6 +83,21 @@ def chip(label):
     return _CHIPS[label]
 
 
+_CREDIT = []
+
+
+def credit(frame):
+    """VOICEVOX の利用規約で必要なクレジット（右上に小さく）。"""
+    if not _CREDIT:
+        _CREDIT.append(txt(CREDIT, 24, "m", bold=False))
+        if CREDIT2:
+            _CREDIT.append(txt(CREDIT2, 20, "m", bold=False))
+    y = 46
+    for im in _CREDIT:
+        paste(frame, im, SAFE_R - im.size[0], y)
+        y += im.size[1] - 6
+
+
 def progress(frame, gf, total, plan):
     d = ImageDraw.Draw(frame)
     d.rectangle([0, 0, W, 12], fill=(30, 44, 84, 255))
@@ -98,6 +114,7 @@ def frame_at(sp, els, f, total, plan):
     progress(fr, sp["start_frame"] + f, total, plan)
     if sp["chip"]:
         paste(fr, chip(sp["chip"]), SAFE_L, 44)
+    credit(fr)
     for e in els:
         e.draw(fr, t)
     # シーン切り替えのフェード（頭 0.2 秒）
@@ -115,6 +132,11 @@ def lint(sp, els, t):
         if not in_safe(e.bbox):
             probs.append(f"安全領域外: {getattr(e, 'name', type(e).__name__)} bbox={tuple(int(v) for v in e.bbox)}")
     texts = [e for e in vis if not e.deco]
+    if ZUNDA:  # ずんだもんの立つ場所に文字が来ていないか
+        for e in texts:
+            a, b = e.bbox, CHAR_BOX
+            if min(a[2], b[2]) - max(a[0], b[0]) > 4 and min(a[3], b[3]) - max(a[1], b[1]) > 4:
+                probs.append(f"ずんだもんと重なり: {tuple(int(v) for v in a)}")
     for i in range(len(texts)):
         for j in range(i + 1, len(texts)):
             a, b = texts[i].bbox, texts[j].bbox
@@ -127,7 +149,11 @@ def lint(sp, els, t):
 
 def build(sp):
     dur = sp["frames"] / FPS
-    return BUILDERS[sp["id"]](sp["cues"], dur)
+    els = BUILDERS[sp["id"]](sp["cues"], dur)
+    if ZUNDA:
+        from zunda import Zundamon
+        els.append(Zundamon(sp["id"], sp["cues"], sp["phrases"], first_scene=sp["id"] == 0))
+    return els
 
 
 def stills(guides=True):

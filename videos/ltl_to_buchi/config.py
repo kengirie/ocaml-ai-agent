@@ -9,17 +9,25 @@ SAFE_L, SAFE_R, SAFE_T, SAFE_B = 60, W - 150, 130, H - 380
 
 PAD_PRE, PAD_POST = 0.3, 0.8  # ナレーション前後の余白（秒）
 
-SPEAKER_NAME = "青山龍星"
+# LTL_VARIANT=zunda でずんだもん解説版（声・原稿・キャラクター・出力先が変わる）
+VARIANT = os.environ.get("LTL_VARIANT", "normal")
+ZUNDA = VARIANT == "zunda"
+
+SPEAKER_NAME = "ずんだもん" if ZUNDA else "青山龍星"
 SPEAKER_STYLE = "ノーマル"
-SPEED = 1.2
-PAUSE_SCALE = 0.5  # 句読点の間を半分に
+SPEED = 1.3 if ZUNDA else 1.2
+PAUSE_SCALE = 0.35 if ZUNDA else 0.5  # 句読点の間を短く
+CREDIT = f"VOICEVOX:{SPEAKER_NAME}"
+CREDIT2 = "立ち絵：東北ずん子・ずんだもんプロジェクト" if ZUNDA else None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-BUILD = os.environ.get(
-    "LTL_BUILD",
-    "/tmp/claude-0/-home-user-ocaml-ai-agent/5fc98760-5e21-5f6b-9633-885da90bde4c/scratchpad/build",
-)
-OUT = os.path.join(HERE, "ltl_to_buchi_shorts.mp4")
+_SCRATCH = "/tmp/claude-0/-home-user-ocaml-ai-agent/5fc98760-5e21-5f6b-9633-885da90bde4c/scratchpad"
+BUILD = os.environ.get("LTL_BUILD", os.path.join(_SCRATCH, "build_zunda" if ZUNDA else "build"))
+OUT = os.path.join(HERE, "ltl_to_buchi_shorts_zundamon.mp4" if ZUNDA else "ltl_to_buchi_shorts.mp4")
+ASSETS = os.path.join(_SCRATCH, "zunda_assets")  # fetch_zundamon.py が公式立ち絵を置く場所
+
+# ずんだもんが立つ左下の領域（ここには文字を置かない）
+CHAR_BOX = (60, 1190, 300, SAFE_B)
 
 FONT_REG = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
 FONT_BOLD = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
@@ -79,6 +87,29 @@ SCENES = [
         "say": "まとめ。|エルティーエルは、未来への約束。|状態は、まだ果たしていない約束。|受理条件は、先延ばし禁止。",
     },
 ]
+
+
+# ずんだもん版の原稿（"|" の数は上と同じ。画面の文字を出すタイミングを共有する）
+ZUNDA_SAY = [
+    "「いつか必ず」を、グラフにする方法なのだ。|エルティーエルから、ビュッヒ・オートマトンへの変換を、|きゅうじゅうびょうで解説なのだ！",
+    "エルティーエルは、|時間の流れについての性質を書く論理なのだ。|ジーはいつも、|エフはいつか、|エックスは次の瞬間、|ユーは、なになにになるまでずっと。|たとえば、要求されたら、いつか必ず応答する、なのだ。",
+    "ビュッヒ・オートマトンは、|終わらない入力を読む状態遷移図なのだ。|入力に最後がないから、|受理状態を無限回通れば受理、と決めるのだ。",
+    "なんで変換するのか。|モデル検査では、システムと|「仕様が破られる様子」のオートマトンを掛け合わせるのだ。|両方が受け入れる実行があればバグなのだ。|なければ仕様は必ず守られるのだ！",
+    "カギはてんかいそくなのだ。|「いつかピー」は、|「今ピー」か、|「次の瞬間から見て、いつかピー」。|このエックスのうしろ、|次へ持ち越す約束が、|そのまま状態になるのだ。",
+    "例えば、エフピー。|キューゼロは、「いつかピー」を約束中の状態。|ピーじゃなければ、約束を持ち越してキューゼロのまま。|ピーが来たら約束達成でキューワンへ。|キューワンでは、もう何が来てもオーケー。|約束を果たしたキューワンが受理状態なのだ。",
+    "入力を流してみるのだ。|ピーが来て、キューワンに入ると、|あとはキューワンを回り続ける。|受理状態を無限回通るから、受理。|でもずっとピーが来なければ、|キューゼロで約束を先延ばしし続けるから、|ふじゅりなのだ。",
+    "どんな式でも、手順は同じなのだ。|否定を内側に押し込み、|てんかいそくで「今」と「次の約束」に分け、|約束の組み合わせを状態にして、|ユーとエフごとに先延ばし禁止の受理条件をつける。|これがタブロー法なのだ！",
+    "まとめなのだ。|エルティーエルは、未来への約束。|状態は、まだ果たしていない約束。|受理条件は、先延ばし禁止なのだ！",
+]
+# シーンごとの立ち絵 [(シーン内のキュー番号, 立ち絵の番号)]
+ZUNDA_POSES = {0: [(0, "004")], 1: [(0, "002")], 2: [(0, "030")], 3: [(0, "003"), (4, "030")],
+               4: [(0, "002")], 5: [(0, "003"), (5, "030")], 6: [(0, "002"), (3, "037"), (6, "003")],
+               7: [(0, "002"), (5, "004")], 8: [(0, "030")]}
+
+if ZUNDA:
+    for _sc, _say in zip(SCENES, ZUNDA_SAY):
+        assert _say.count("|") == _sc["say"].count("|"), _sc["id"]
+        _sc["say"] = _say
 
 
 def plain(say):

@@ -21,14 +21,14 @@ def build_0(c, dur):
     els = [
         El(txt("{y:『いつか必ず』}を", 100), CX, 330, 0.05, anchor="ct", anim="pop", sfx="pon"),
         El(txt("グラフにする方法", 100), CX, 470, 0.35, anchor="ct", anim="pop", sfx=None),
-        El(txt("{y:LTL}  →  {c:ビュッヒ・オートマトン}", 56), CX, 680, c[1], anchor="ct"),
-        El(pill("90秒で解説", 44, border="y"), CX, 810, c[2], anchor="ct", anim="pop", sfx="pon"),
+        El(txt("{y:LTL}  →  {c:ビュッヒ・オートマトン}", 56), CX, 640, c[1], anchor="ct"),
+        El(pill("90秒で解説", 44, border="y"), CX, 750, c[2], anchor="ct", anim="pop", sfx="pon"),
     ]
-    a = Automaton((330, 1290), (680, 1290), 72)
+    a = Automaton((360, 1090), (700, 1090), 72)
     t0 = 0.6
     for k, n in enumerate(["start", "q0", "loop0", "edge", "q1", "loop1"]):
         els.append(a.el(n, t0 + 0.12 * k, sfx=None))
-    els.append(Pulse(680, 1290, 72, c[1] + 0.4, sfx=None))
+    els.append(Pulse(700, 1090, 72, c[1] + 0.4, sfx=None))
     return els
 
 
@@ -63,14 +63,14 @@ def build_1(c, dur):
     rows = [("G p", "いつも", "ggggggggg"), ("F p", "いつか", "oooooгooo".replace("г", "g")),
             ("X p", "次の瞬間に", "ogooooooo"), ("p U q", "{y:q} になるまでずっと {y:p}", "ggggqoooo")]
     for i, (f, mean, pat) in enumerate(rows):
-        y = 350 + i * 148
+        y = 345 + i * 145
         t = c[2 + i]
         els.append(El(panel(CW, 130, border=None), SAFE_L, y, t, deco=True, sfx=None))
         els.append(El(txt("{y:%s}" % f, 60), SAFE_L + 30, y + 65, t, anchor="lc", sfx=None))
         els.append(El(txt(mean, 46), SAFE_L + 255, y + 10, t, sfx="tick"))
         els.append(El(dots(pat), SAFE_L + 262, y + 72, t + 0.1, sfx=None))
-    y = 980
-    ex = boxed([("{m:例}", 34), ("{y:G(要求 → F 応答)}", 64), ("要求されたら、いつか必ず応答する", 42)],
+    y = 945
+    ex = boxed([("{m:例}　{y:G(要求 → F 応答)}", 60), ("要求されたら、いつか必ず応答する", 42)],
                CW, border="y", gap=6)
     els.append(El(ex, SAFE_L, y, c[6], anim="pop", sfx="pon"))
     return els
@@ -150,20 +150,20 @@ def build_3(c, dur):
     els.append(El(boxed([("{y:¬φ} の{c:オートマトン}", 48)], bw, border="c", align="c"), CX, 500, c[2], anchor="ct"))
     els.append(El(txt("（φ ＝ 守りたい仕様、¬φ ＝ それが破られる様子）", 30, "m"), CX, 625, c[2] + 0.3,
                   anchor="ct", sfx=None))
-    els.append(El(txt("↓", 56, "m"), CX, 680, c[2] + 1.0, anchor="ct", sfx=None))
-    q = boxed([("両方が受け入れる", 50), ("{p:無限の実行}はある？", 50)], CW, border="w", align="c")
-    els.append(El(q, SAFE_L, 770, c[2] + 1.2, anim="pop", sfx="pon"))
+    els.append(El(txt("↓", 44, "m"), CX, 668, c[2] + 1.0, anchor="ct", sfx=None))
+    q = boxed([("両方が受け入れる{p:無限の実行}はある？", 46)], CW, border="w", align="c")
+    els.append(El(q, SAFE_L, 745, c[2] + 1.2, anim="pop", sfx="pon"))
 
     def row(tag, tagc, body, y, t, sfx):
         tg = pill(tag, 40, fill=tagc, border=None, default="bg0")
-        p = panel(CW, 120, border=tagc)
-        p.alpha_composite(tg, (24, (120 - tg.size[1]) // 2))
+        p = panel(CW, 106, border=tagc)
+        p.alpha_composite(tg, (24, (106 - tg.size[1]) // 2))
         b = Txt(body, 42)
-        p.alpha_composite(b.img, (24 + tg.size[0] + 22, (120 - b.h) // 2))
+        p.alpha_composite(b.img, (24 + tg.size[0] + 22, (106 - b.h) // 2))
         return El(p, SAFE_L, y, t, anim="pop", sfx=sfx)
 
-    els.append(row("ある", "p", "→ バグの実例（反例）が見つかる", 1000, c[3], "pon"))
-    els.append(row("ない", "g", "→ 仕様は{g:必ず守られる}", 1150, c[4], "pon"))
+    els.append(row("ある", "p", "→ バグの実例（反例）が見つかる", 895, c[3], "pon"))
+    els.append(row("ない", "g", "→ 仕様は{g:必ず守られる}", 1020, c[4], "pon"))
     return els
 
 
@@ -197,7 +197,7 @@ def build_4(c, dur):
         for k, line in enumerate(lab.split("|")):
             els.append(El(txt(line, 34), mid, base + 30 + k * 46, t, anchor="ct", sfx="tick" if k == 0 else None))
 
-    y = 700
+    y = 640
     els.append(El(txt("ほかの演算子も同じ形", 32, "m"), SAFE_L, y, c[4], sfx=None))
     r1 = Txt(None, 46, segs=[("G p", "y", ""), (" ≡ ", "w", ""), ("p ∧ X ", "y", ""), ("G p", "c", "")])
     r2 = Txt(None, 46, segs=[("p U q", "y", ""), (" ≡ ", "w", ""), ("q ∨ (p ∧ X ", "y", ""),
@@ -206,7 +206,7 @@ def build_4(c, dur):
     els.append(El(r2.img, SAFE_L + 10, y + 118, c[4] + 0.3, sfx=None))
 
     box = boxed([("{y:X} のうしろ ＝ {c:次へ持ち越す約束}", 48)], CW, border="c", align="c")
-    els.append(El(box, SAFE_L, 930, c[5], sfx="tick"))
+    els.append(El(box, SAFE_L, 860, c[5], sfx="tick"))
 
     # 約束 F p → 状態
     r = 82
@@ -216,21 +216,20 @@ def build_4(c, dur):
     st = ss_done(img, 2 * r + 12, 2 * r + 12)
     t = Txt("{c:F p}", 52)
     st.alpha_composite(t.img, ((st.size[0] - t.w) // 2, (st.size[1] - t.h) // 2 - 2))
-    els.append(El(txt("↓", 52, "m"), CX, 1060, c[6], anchor="ct", sfx=None))
-    els.append(El(st, SAFE_L + 150, 1140, c[6], anim="pop", sfx="pon"))
-    els.append(El(txt("そのまま", 44), SAFE_L + 370, 1165, c[6] + 0.15, sfx=None))
-    els.append(El(txt("{c:状態} になる", 56), SAFE_L + 370, 1225, c[6] + 0.15, sfx=None))
+    els.append(El(st, CX + 40, 1005, c[6], anim="pop", sfx="pon"))
+    els.append(El(txt("そのまま", 44), CX + 10, 1030, c[6] + 0.15, anchor="rt", sfx=None))
+    els.append(El(txt("{c:状態} になる", 56), CX + 10, 1090, c[6] + 0.15, anchor="rt", sfx=None))
     return els
 
 
 # ================================================================ 5 例：F p
 def build_5(c, dur):
     els = [title("例：{y:F p} の変換")]
-    a = Automaton((300, 640), (700, 640), 80)
+    a = Automaton((300, 600), (700, 600), 80)
     els += [a.el("start", c[1], sfx="tick"), a.el("q0", c[1], anim="pop", sfx=None),
             a.el("loop0", c[2]), a.el("edge", c[3]), a.el("q1", c[3] + 0.25, anim="pop", sfx=None),
             a.el("loop1", c[4])]
-    els.append(Pulse(700, 640, 80, c[5], sfx="kiran"))
+    els.append(Pulse(700, 600, 80, c[5], sfx="kiran"))
     lines = [
         (Q(0) + " ＝「{y:F p}」を約束中", c[1]),
         ("{y:¬p} なら → 約束を持ち越す", c[2]),
@@ -238,9 +237,10 @@ def build_5(c, dur):
         (Q(1) + " では何が来ても OK（{y:true}）", c[4]),
     ]
     for k, (m, t) in enumerate(lines):
-        els.append(El(txt(m, 44), SAFE_L + 10, 860 + k * 100, t, sfx=None))
-    fin = boxed([("約束を果たした " + Q(1, "p") + " ＝ {p:受理状態}", 50)], CW, border="p", align="c")
-    els.append(El(fin, SAFE_L, 1290, c[5], anim="pop", sfx=None))
+        els.append(El(txt(m, 44), SAFE_L + 10, 780 + k * 88, t, sfx=None))
+    fin = boxed([("約束を果たした " + Q(1, "p") + " が", 46), ("＝ {p:受理状態}", 54)], SAFE_R - 300, border="p",
+                align="c")
+    els.append(El(fin, SAFE_R, 1120, c[5], anchor="rt", anim="pop", sfx=None))
     return els
 
 
@@ -269,7 +269,7 @@ class Demo:
         self.ctr_label = txt("受理状態を通った回数", 40)
         self.num_cache = {}
         self.deco = False
-        self.bbox = (self.wx, tape_y - 4, self.wx + self.ww, counter_xy[1] + 100)
+        self.bbox = (self.wx, tape_y - 4, self.wx + self.ww, counter_xy[1] + 80)
         self.t = 0.0
         self.sfx = None
 
@@ -414,14 +414,14 @@ def build_6(c, dur):
     while t < dur - 0.25:
         readsB.append((t, "n"))
         t += 0.6
-    els.append(Demo(a, tape_y, readsA, c[4], readsB, (SAFE_L + 10, 830)))
+    els.append(Demo(a, tape_y, readsA, c[4], readsB, (SAFE_L + 10, 800)))
 
     def row(markup, border, y, t, sfx):
-        return El(boxed([(markup, 46)], CW, border=border, pad=22), SAFE_L, y, t, anim="pop", sfx=sfx)
+        return El(boxed([(markup, 46)], CW, border=border, pad=16), SAFE_L, y, t, anim="pop", sfx=sfx)
 
-    els.append(row("{y:p} が来た → " + Q(1, "p") + " を無限回 → {p:受理 ✓}", "p", 960, c[3], "kiran"))
-    els.append(El(txt("ずっと {y:¬p} → " + Q(0) + " で約束を先延ばし…", 40, "m"), SAFE_L + 10, 1100, c[5], sfx="tick"))
-    els.append(row("ずっと {y:¬p} なら → {r:不受理}", "r", 1170, c[6], "boo"))
+    els.append(row("{y:p} が来た → " + Q(1, "p") + " を無限回 → {p:受理 ✓}", "p", 905, c[3], "kiran"))
+    els.append(El(txt("ずっと {y:¬p} → " + Q(0) + " で約束を先延ばし…", 38, "m"), SAFE_L + 10, 1016, c[5], sfx="tick"))
+    els.append(row("ずっと {y:¬p} なら → {r:不受理}", "r", 1077, c[6], "boo"))
     return els
 
 
@@ -433,7 +433,7 @@ def build_7(c, dur):
              "約束の組み合わせ ＝ {c:状態}",
              "{y:U}・{y:F} ごとに 先延ばし禁止の{p:受理条件}"]
     for i, s in enumerate(steps):
-        y = 290 + i * 150
+        y = 290 + i * 140
         p = panel(CW, 120, border="line")
         img, d = ss_canvas(76, 76)
         d.ellipse([2 * SS, 2 * SS, 74 * SS, 74 * SS], fill=COL["c"] + (255,))
@@ -444,10 +444,10 @@ def build_7(c, dur):
         t = Txt(s, 40)
         p.alpha_composite(t.img, (118, (120 - t.h) // 2))
         els.append(El(p, SAFE_L, y, c[1 + i]))
-    els.append(El(pill("これが {y:タブロー法}", 54, border="y", padx=40, pady=14), CX, 940, c[5],
+    els.append(El(pill("これが {y:タブロー法}", 54, border="y", padx=40, pady=14), CX, 870, c[5],
                   anchor="ct", anim="pop", sfx="pon"))
-    els.append(El(txt("・状態数は最悪 2{m^:(式の長さ)}", 40, "m"), SAFE_L + 10, 1090, c[5] + 0.25, sfx=None))
-    els.append(El(txt("・実務では {c:Spot}・{c:LTL2BA} が自動でやる", 40, "m"), SAFE_L + 10, 1170, c[5] + 0.45,
+    els.append(El(txt("・状態数は最悪 2{m^:(式の長さ)}", 40, "m"), SAFE_L + 10, 1005, c[5] + 0.25, sfx=None))
+    els.append(El(txt("・実務では {c:Spot}・{c:LTL2BA} が自動でやる", 40, "m"), SAFE_L + 10, 1075, c[5] + 0.45,
                   sfx=None))
     return els
 
