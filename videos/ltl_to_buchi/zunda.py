@@ -10,10 +10,10 @@ from PIL import Image
 from config import ASSETS, BUILD, CHAR_BOX, FPS, PAD_PRE, SR, ZUNDA_HOPS
 from gfx import ease_out, paste
 
-CHAR_W = 340      # 表示幅
+CHAR_W = 400      # 表示幅
 CHAR_X = 20       # 左端
 CHAR_TOP = 1195   # 頭のてっぺん（体の下のほうは Shorts の UI の下に隠れてよい）
-FADE = 110        # 下端をふわっと消す高さ
+FADE = 40         # 下端（足元・UI の下）をふわっと消す高さ
 
 
 @lru_cache(None)
@@ -24,7 +24,6 @@ def mouth_img(state):
     a = np.array(im.getchannel("A")).astype(float)
     h = a.shape[0]
     a *= np.clip((h - np.arange(h)) / FADE, 0, 1)[:, None]
-    a *= np.clip(np.arange(h) / 14, 0, 1)[:, None]  # 元画像の上端で切れた葉っぱをなじませる
     im.putalpha(Image.fromarray(a.astype(np.uint8)))
     return im
 

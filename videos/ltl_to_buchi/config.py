@@ -27,7 +27,7 @@ OUT = os.path.join(HERE, "ltl_to_buchi_shorts_zundamon.mp4" if ZUNDA else "ltl_t
 ASSETS = os.path.join(_SCRATCH, "zunda_assets")  # cut_zundamon.py が切り出した立ち絵を置く場所
 
 # ずんだもんが立つ左下の領域（ここには文字を置かない）
-CHAR_BOX = (60, 1190, 340, SAFE_B)
+CHAR_BOX = (60, 1190, 420, SAFE_B)
 
 FONT_REG = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
 FONT_BOLD = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"

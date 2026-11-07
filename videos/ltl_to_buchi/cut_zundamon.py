@@ -1,72 +1,48 @@
-"""ずんだもん立ち絵素材（一覧画像）から右側の大きいずんだもんを切り出し、口パク用の差分を作る。
+"""ずんだもん立ち絵（背景が透明な全身 PNG）から、口パク用の差分を作る。
 
-  python cut_zundamon.py 素材画像.webp
+  python cut_zundamon.py 立ち絵.png
 
-灰色の背景（RGB 208 付近）を抜き、隣の絵と接している所は手で引いた切り取り線で分ける。
-口は「開き（元の絵）・半開き・閉じ」の 3 枚を作る。出力は config.ASSETS に置く（リポジトリには入れない）。
+口は「開き（元の絵）・半開き・閉じ（ω 口）」の 3 枚。出力は config.ASSETS に置く（リポジトリには入れない）。
 """
 import os
 import sys
 
-import numpy as np
 from PIL import Image, ImageDraw
-from scipy import ndimage as nd
 
 from config import ASSETS
 
-BG = 208
-# 隣の絵との切り取り線（元画像 1200x884 の座標）
-CUT = [(676, 0), (684, 170), (688, 285), (708, 300), (714, 335), (750, 365), (756, 470), (742, 520),
-       (708, 555), (716, 600), (748, 645), (776, 676), (790, 700), (752, 720), (745, 884)]
-FACE = (950, 500)            # 大きいずんだもんの内側の点
-MOUTH = (872, 286, 936, 349)  # 口の範囲
-SKIN = (253, 238, 218, 255)
+SIZE = (1082, 1650)            # 想定している元画像の大きさ
+MOUTH = (462, 474, 526, 537)   # 口の範囲
+SKIN = (252, 238, 216, 255)
 LINE = (64, 57, 57, 255)
+CLOSED = [(467, 486), (476, 483), (484, 480), (491, 479), (497, 483), (504, 484), (512, 483), (520, 486)]
 
 
 def main(src):
-    im = Image.open(src).convert("RGB")
-    assert im.size == (1200, 884), im.size
-    a = np.array(im).astype(int)
-    bg = np.abs(a - BG).max(2) <= 6
-    lab, n = nd.label(bg)
-    sizes = nd.sum(bg, lab, range(1, n + 1))
-    edge = set(np.unique(np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]]))) - {0}
-    drop = np.concatenate([[False], [(i in edge or s > 150) for i, s in enumerate(sizes, 1)]])
-    fg = ~drop[lab]
-    cut = Image.new("L", im.size, 0)
-    ImageDraw.Draw(cut).line(CUT, fill=255, width=3)
-    fl, _ = nd.label(fg & (np.array(cut) == 0))
-    m = nd.binary_fill_holes(fl == fl[FACE[1], FACE[0]]) & fg
-    alpha = m.astype(float)
-    # 画像の右端で切れているしっぽはふわっと消す
-    x = np.arange(im.size[0])
-    alpha *= np.clip((1195 - x) / 75, 0, 1)[None, :]
-    rgba = Image.fromarray(np.dstack([np.array(im), (alpha * 255).astype(np.uint8)]))
-    rgba = rgba.crop(rgba.getchannel("A").getbbox())
-    ox, oy = Image.fromarray((alpha * 255).astype(np.uint8)).getbbox()[:2]
-    mx0, my0, mx1, my1 = MOUTH[0] - ox, MOUTH[1] - oy, MOUTH[2] - ox, MOUTH[3] - oy
+    im = Image.open(src).convert("RGBA")
+    assert im.size == SIZE, im.size
+    mx0, my0, mx1, my1 = MOUTH
 
     def blank():
-        b = rgba.copy()
-        ImageDraw.Draw(b).ellipse([mx0 - 2, my0 - 2, mx1 + 1, my1 + 1], fill=SKIN)
+        b = im.copy()
+        ImageDraw.Draw(b).ellipse([mx0 - 3, my0 - 3, mx1 + 1, my1 - 1], fill=SKIN)
         return b
 
-    mouth = rgba.crop((mx0, my0, mx1, my1))
+    mouth = im.crop(MOUTH)
     half = blank()
     half.alpha_composite(mouth.resize((mx1 - mx0, (my1 - my0) * 34 // 63), Image.LANCZOS), (mx0, my0 + 2))
     closed = blank()
-    S = 4
-    L = Image.new("RGBA", (80 * S, 40 * S))
-    pts = [(877, 298), (886, 295), (894, 292), (901, 291), (907, 295), (914, 296), (922, 295), (930, 298)]
-    ImageDraw.Draw(L).line([((x - 866) * S, (y - 280) * S) for x, y in pts], fill=LINE, width=4 * S, joint="curve")
-    closed.alpha_composite(L.resize((80, 40), Image.LANCZOS), (866 - ox, 280 - oy))
+    S, ox, oy = 4, mx0 - 10, my0 - 10
+    L = Image.new("RGBA", (90 * S, 40 * S))
+    ImageDraw.Draw(L).line([((x - ox) * S, (y - oy) * S) for x, y in CLOSED], fill=LINE, width=5 * S, joint="curve")
+    closed.alpha_composite(L.resize((90, 40), Image.LANCZOS), (ox, oy))
 
+    box = im.getchannel("A").getbbox()
     os.makedirs(ASSETS, exist_ok=True)
-    for name, img in (("open", rgba), ("half", half), ("closed", closed)):
+    for name, img in (("open", im), ("half", half), ("closed", closed)):
         p = os.path.join(ASSETS, f"zunda_{name}.png")
-        img.save(p)
-        print(p, img.size)
+        img.crop(box).save(p)
+        print(p, img.crop(box).size)
 
 
 if __name__ == "__main__":
